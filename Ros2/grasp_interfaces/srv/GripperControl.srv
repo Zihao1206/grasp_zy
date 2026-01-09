@@ -1,0 +1,7 @@
+# 夹爪控制服务
+# position: 0=闭合, 1=打开
+int32 position
+---
+bool success
+string message
+
