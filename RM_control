@@ -1,0 +1,54 @@
+from robotic_arm_package.robotic_arm import *
+import socket
+import tkinter as tk
+from tkinter import ttk
+import ctypes
+import sys
+import numpy as np
+
+
+ip = "192.168.1.18"
+port = 8080
+robot = Arm(RM65, ip, port)
+serve_address = (ip,port)
+ 
+def Socket_Connect():
+    client = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        client.connect(serve_address)
+        return True
+    except socket.error as e:
+        return False
+    
+def sample():
+    ret = robot.Get_Current_Arm_State(retry=1)
+    if ret[0] != 0:
+        print("获取机械臂当前状态失败：" + str(ret))
+        sys.exit()
+    joint = ret[1][:6]
+    joint[0] += 10
+    ret = robot.Movej_Cmd(joint, 20, 0)
+    if ret != 0:
+        print("回零位失败：" + str(ret))
+        sys.exit()
+
+def move(target_joint):
+
+    ret = robot.Movej_Cmd(target_joint, 20, 0)
+    if ret != 0:
+        print("回零位失败：" + str(ret))
+        sys.exit()
+
+
+if __name__ == "__main__":
+
+    Socket_Connect()
+
+    joint = [0, -54, 30, 175, -25, 114]
+
+    # sample()
+    move(joint)
+
+    # 断开连接
+    robot.RM_API_UnInit()
+    robot.Arm_Socket_Close()

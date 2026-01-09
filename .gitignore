@@ -1,0 +1,88 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual Environment
+venv/
+ENV/
+env/
+.venv
+
+# PyTorch
+*.pth
+*.pt
+*.ckpt
+
+# TensorFlow
+*.h5
+*.pb
+*.tfrecords
+
+# Jupyter Notebook
+.ipynb_checkpoints
+*.ipynb
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# Project specific
+outputs/
+logs/
+*.log
+weights/*.pth
+weights/*.pt
+weights/epoch_*
+models/test_*/
+models/weights/fine_tune_*/
+models/weights/epoch_*
+
+# Data files
+dataset/*.data
+dataset/*.txt
+*.npy
+*.npz
+
+# Compiled libraries
+*.so
+*.so.*
+*.a
+*.dylib
+
+# Systemd service (if local)
+RunGraspd.service
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+
+# Test directories
+test_*/
+
+*.tar.gz
+*.tar
+*.zip
