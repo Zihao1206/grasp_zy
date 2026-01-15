@@ -1,10 +1,10 @@
 # Python
-__pycache__/
+**/__pycache__/**
 *.py[cod]
 *$py.class
 *.so
 .Python
-build/
+**/build/**
 develop-eggs/
 dist/
 downloads/
@@ -30,6 +30,11 @@ env/
 *.pth
 *.pt
 *.ckpt
+*.pkl
+*.safetensors
+*.onnx
+*.engine
+*.trt
 
 # TensorFlow
 *.h5
@@ -37,11 +42,11 @@ env/
 *.tfrecords
 
 # Jupyter Notebook
-.ipynb_checkpoints
+**/.ipynb_checkpoints/**
 *.ipynb
 
 # IDE
-.vscode/
+**/.vscode/**
 .idea/
 *.swp
 *.swo
@@ -53,32 +58,77 @@ Thumbs.db
 outputs/
 logs/
 *.log
+**/grasp_label*/**
+**/log*/**
+**/dump*/**
 weights/*.pth
 weights/*.pt
 weights/epoch_*
 models/test_*/
 models/weights/fine_tune_*/
 models/weights/epoch_*
+/graspnetAPI/eval/acc_novel
+graspnet-baseline/Image-/
+graspnet-baseline/doc/try_data/
+graspnet-baseline/doc/example_data/
+prepare/D435/data_collection_d435_win/images/
+prepare/D435/data_collection_d435_win/images2024*/
+prepare/D435/data_collection_d435_win/web-log/
+others/photos/
+models/mmdetection/.mim/
+graspnet-baseline/knn/knn_pytorch.egg-info/
+graspnet-baseline/pointnet2/pointnet2.egg-info/
+graspnetAPI/graspnetAPI.egg-info/
+robotic_arm_package/linux_arm_base_release_v4.3.2/
+robotic_arm_package/linux_x86_base_release_v4.3.2/
+robotic_arm_package/*.tar.bz2
+*.vsdx
 
 # Data files
 dataset/*.data
 dataset/*.txt
+**/dataset/tolerance
 *.npy
 *.npz
+*.mat
+*.parquet
+*.tiff
+*.tif
+*.jpg
+*.jpeg
+*.png
+*.webp
+*.bmp
+*.gif
+*.mp4
+*.avi
+*.mov
+*.mkv
+*.wav
+*.mp3
 
 # Compiled libraries
+*.o
 *.so
 *.so.*
 *.a
 *.dylib
+*.whl
+MANIFEST
+/graspnms/grasp_nms.cpp
 
 # Systemd service (if local)
 RunGraspd.service
+*.service
 
 # Temporary files
 tmp/
 temp/
 *.tmp
+*.log.json
+*.bak
+*.backup
+web-log/
 
 # Test directories
 test_*/
@@ -86,11 +136,11 @@ test_*/
 *.tar.gz
 *.tar
 *.zip
+*.bz2
 
 # ROS2
 Ros2/install/
 Ros2/log/
-Ros2/build/
 Ros2/.colcon_workspace/
 *.ros
 *.ros2
