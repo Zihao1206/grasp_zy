@@ -86,3 +86,13 @@ test_*/
 *.tar.gz
 *.tar
 *.zip
+
+# ROS2
+Ros2/install/
+Ros2/log/
+Ros2/build/
+Ros2/.colcon_workspace/
+*.ros
+*.ros2
+.ros/
+.ros2/

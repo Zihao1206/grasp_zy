@@ -21,7 +21,9 @@ setup(
     entry_points={
         'console_scripts': [
             'arm_controller = grasp_control.arm_controller:main',
+            'mock_arm_controller = grasp_control.mock_arm_controller:main',
             'gripper_server = grasp_control.gripper_server:main',
+            'mock_gripper_server = grasp_control.mock_gripper_server:main',
         ],
     },
 )

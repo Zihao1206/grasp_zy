@@ -22,14 +22,19 @@ fi
 # 检查 ROS2 环境
 if [ -z "$ROS_DISTRO" ]; then
     echo -e "${YELLOW}警告: 未检测到 ROS2 环境，尝试加载...${NC}"
-    if [ -f "/opt/ros/humble/setup.bash" ]; then
-        source /opt/ros/humble/setup.bash
-        echo -e "${GREEN}已加载 ROS2 Humble${NC}"
-    elif [ -f "/opt/ros/foxy/setup.bash" ]; then
+    # Ubuntu 20.04 → Foxy (优先)
+    if [ -f "/opt/ros/foxy/setup.bash" ]; then
         source /opt/ros/foxy/setup.bash
-        echo -e "${GREEN}已加载 ROS2 Foxy${NC}"
+        echo -e "${GREEN}已加载 ROS2 Foxy (Ubuntu 20.04)${NC}"
+    elif [ -f "/opt/ros/humble/setup.bash" ]; then
+        source /opt/ros/humble/setup.bash
+        echo -e "${GREEN}已加载 ROS2 Humble (Ubuntu 22.04)${NC}"
+    elif [ -f "/opt/ros/galactic/setup.bash" ]; then
+        source /opt/ros/galactic/setup.bash
+        echo -e "${GREEN}已加载 ROS2 Galactic${NC}"
     else
         echo -e "${RED}错误: 未找到 ROS2 安装${NC}"
+        echo -e "${YELLOW}Ubuntu 20.04 请安装: sudo apt install ros-foxy-desktop${NC}"
         exit 1
     fi
 fi

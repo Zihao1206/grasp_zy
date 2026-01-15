@@ -23,6 +23,7 @@ setup(
     entry_points={
         'console_scripts': [
             'camera_node = grasp_vision.camera_node:main',
+            'mock_camera_node = grasp_vision.mock_camera_node:main',
             'detection_server = grasp_vision.detection_server:main',
             'grasp_generator = grasp_vision.grasp_generator:main',
         ],
