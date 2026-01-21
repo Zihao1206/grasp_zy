@@ -31,3 +31,7 @@ tqdm>=4.60.0
 
 # 其他工具
 packaging
+python-dotenv>=0.19.0
+
+# GLM-4 API
+zhipuai>=2.0.0

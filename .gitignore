@@ -54,6 +54,11 @@ env/
 .DS_Store
 Thumbs.db
 
+# Environment variables (API keys, secrets)
+.env
+.env.local
+.env.*.local
+
 # Project specific
 outputs/
 logs/
@@ -146,3 +151,6 @@ Ros2/.colcon_workspace/
 *.ros2
 .ros/
 .ros2/
+
+#else
+disorder*/
