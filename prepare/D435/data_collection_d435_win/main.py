@@ -11,7 +11,7 @@ from log_setting import CommonLog
 from config import CODE_fi, HOST_fi
 from robotic_arm import Arm
 
-cam0_path = 'eyeouthand_2025'  # 提前建立好的存储照片文件的目录
+cam0_path = '/home/zh/zh/grasp_zy_py310/prepare/D435/data_collection_d435_win/images'  # 提前建立好的存储照片文件的目录
 
 if not os.path.exists(cam0_path):
     os.makedirs(cam0_path)
