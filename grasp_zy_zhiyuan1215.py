@@ -18,7 +18,8 @@ from utils.utils import *
 from models.gqcnn_server.augment_cnn import AugmentCNN
 import models.genotypes as gt
 import datetime
-from robotic_arm_package.robotic_arm import *
+from Robotic_Arm.rm_robot_interface import *
+from Robotic_Arm.rm_ctypes_wrap import rm_inverse_kinematics_params_t
 from mmdet.apis import init_detector, inference_detector
 from models.nms import nms
 from mmdet.registry import VISUALIZERS
@@ -38,8 +39,10 @@ class Grasp:
         self.init_pose = [-0.226100, -0.00309, 0.522900, -0.010, 0.028, 2.650]
         self.camera = camera.RS(640, 480)
         if self.hardware:
-            self.robot = Arm(RM65, "192.168.127.101", 8080)
-            self.robot.Set_Collision_Stage(5)
+            # 新API: 创建机械臂对象并连接
+            self.robot = RoboticArm(rm_thread_mode_e.RM_TRIPLE_MODE_E)
+            self.robot_handle = self.robot.rm_create_robot_arm("192.168.127.101", 8080)
+            self.robot.rm_set_collision_state(5)
             self.gripper = gripper.GripperZhiyuan(self.robot)
             self.gripper.gripper_initial()
             self.init_end_pos = np.array([0.003114, 0.071823, 0.34087])
@@ -51,7 +54,7 @@ class Grasp:
             self.init_pose = [86, -129, 127, -0.8, 71, -81]
             self.mid_pose = [0, -129, 127, -0.7, 71, -81]
             self.mid_pose1 = [0, -129, 80, -0.7, 100, -81]  # joint6 -28
-            self.robot.Movej_Cmd(self.init_pose, self.robot_speed, 0)
+            self.robot.rm_movej(self.init_pose, self.robot_speed, 0, 0, 1)
             
             self.lift2init_pose = [65, -129, 127, -0.7, 77, 1] ## 回转到初始状态
             self.place_mid_pose = [65, -129, 60, 0, 121, 1] ## 机械臂第三关节前倾
@@ -99,7 +102,7 @@ class Grasp:
         
     def _movej_safe(self, pose, speed, *args, **kwargs):
         """安全移动函数，检测碰撞并抛出异常"""
-        tag = self.robot.Movej_Cmd(pose, speed, *args, **kwargs)
+        tag = self.robot.rm_movej(pose, speed, 0, 0, 1)
         if tag == 0:
             return tag, pose  # 成功返回
         # 检查碰撞码或关键词
@@ -111,27 +114,29 @@ class Grasp:
         """碰撞恢复函数：停止、清除错误、回安全位"""
         print("执行碰撞恢复流程...")
         try:
-            self.robot.Move_Stop_Cmd()
+            self.robot.rm_set_arm_stop()
             print("已发送停止命令")
         except Exception as e:
             print(f"停止命令失败: {e}")
             
         try:
-            self.robot.Clear_System_Err(True)
+            self.robot.rm_clear_system_err()
             print("已清除系统错误")
-            self.robot.Set_Collision_Stage(2)
+            self.robot.rm_set_collision_state(2)
         except Exception as e:
             print(f"清除错误失败: {e}")
             
         try:
             # 先回到中间安全位，再回初始位
             print(f"正在返回安全位置: {self.mid_pose1}")
-            self.robot.Movej_Cmd(self.mid_pose1, self.robot_speed, 0)
+            self.robot.rm_movej(self.mid_pose1, self.robot_speed, 0, 0, 1)
             self.gripper.gripper_position(1)
             time.sleep(1)
             self.gripper.gripper_position(0)
+            time.sleep(1)
+            self.gripper.gripper_position(0)
             print(f"正在返回初始位置: {self.init_pose}")
-            self.robot.Movej_Cmd(self.init_pose, self.robot_speed, 0)
+            self.robot.rm_movej(self.init_pose, self.robot_speed, 0, 0, 1)
             print("碰撞恢复完成")
         except Exception as e:
             print(f"返回安全位失败: {e}")
@@ -435,8 +440,8 @@ class Grasp:
         #                 ))
 
         if self.hardware:
-            self.robot.Movej_Cmd(self.mid_pose, self.robot_speed, 0)
-            self.robot.Movej_Cmd(self.mid_pose1, self.robot_speed, 0)
+            self.robot.rm_movej(self.mid_pose, self.robot_speed, 0, 0, 1)
+            self.robot.rm_movej(self.mid_pose1, self.robot_speed, 0, 0, 1)
             # Tobj2base = self.Tcam2base.dot(Tobj2cam)
             # position = Tobj2base[0:3, 3]
             # gesture = cv2.Rodrigues(Tobj2base[0:3, 0:3])[0].T.squeeze()
@@ -475,20 +480,22 @@ class Grasp:
                     
                     # 计算逆解
                     print(f"计算抓取位姿逆解: {pose}")
-                    tag1, pose_joint = self.robot.Algo_Inverse_Kinematics(self.mid_pose1, pose, 1)
+                    params = rm_inverse_kinematics_params_t(self.mid_pose1, pose, 1)
+                    tag1, pose_joint = self.robot.rm_algo_inverse_kinematics(params)
                     if tag1 != 0:
                         print(f"✗ 机械臂逆解失败！请重新放置物体位置")
-                        self.robot.Movej_Cmd(self.init_pose, self.robot_speed, 0)
+                        self.robot.rm_movej(self.init_pose, self.robot_speed, 0, 0, 1)
                         return False
                     
                     print(f"✓ 逆解成功: {pose_joint}")
                     
                     # 计算上方安全位置逆解
                     print(f"计算上方安全位置逆解: {pose_up_to_grasp_position}")
-                    tag2, up_to_grasp_joint = self.robot.Algo_Inverse_Kinematics(self.mid_pose1, pose_up_to_grasp_position, 1)
+                    params_up = rm_inverse_kinematics_params_t(self.mid_pose1, pose_up_to_grasp_position, 1)
+                    tag2, up_to_grasp_joint = self.robot.rm_algo_inverse_kinematics(params_up)
                     if tag2 != 0:
                         print(f"✗ 上方位置逆解失败！请重新放置物体位置")
-                        self.robot.Movej_Cmd(self.init_pose, self.robot_speed, 0)
+                        self.robot.rm_movej(self.init_pose, self.robot_speed, 0, 0, 1)
                         return False
                     
                     print(f"✓ 上方位置逆解成功: {up_to_grasp_joint}")
@@ -500,7 +507,7 @@ class Grasp:
                     # 打开夹爪
                     print("打开夹爪...")
                     self.gripper.gripper_position(1)
-                    # self.robot.Set_Collision_Stage(8)
+                    # self.robot.rm_set_collision_state(8)
                     time.sleep(1)
                     
                     # 移动到抓取位置
@@ -524,7 +531,7 @@ class Grasp:
                     print("返回初始位置...")
                     self._movej_safe(self.lift2init_pose, self.robot_speed)
 
-                    # self.robot.Set_Collision_Stage(4)
+                    # self.robot.rm_set_collision_state(4)
 
                     # 移动到放置位置
                     print("移动到放置位置...")
