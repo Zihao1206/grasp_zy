@@ -401,13 +401,13 @@ class Grasp:
         color_image = color_img.astype(np.uint8)
         
         black_image = np.zeros((color_image.shape[0], color_image.shape[1]), dtype=np.uint8)
-        background_img = cv2.imread('zy/background.png')
+        # background_img = cv2.imread('zy/background.png')
         for j in range(len(bboxes)):
             mask_circle = np.uint8(masks[j])
 
             if classes[labels[j]] == label:
                 black_image[mask_circle > 0] = 255
-                background_img[mask_circle > 0] = color_image[mask_circle > 0]
+                # background_img[mask_circle > 0] = color_image[mask_circle > 0]
 
         color_img, depth_img, ratio, padw, padh = self.letterbox1(color_img, depth_img, 100)
         # color_img, depth_img, ratio, padw, padh = self.letterbox1(background_img, depth_img, 100)

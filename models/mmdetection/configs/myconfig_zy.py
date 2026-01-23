@@ -5,7 +5,7 @@ _base_ = ['_base_/models/mask-rcnn_r50_fpn.py',
 
 # 1. 数据集设定
 dataset_type = 'CocoDataset'
-classes = ('terminal', 'limit', 'voltage', 'soap', 'interrupter')  ## 修改一处
+classes = ('terminal', 'limit', 'voltage', 'soap', 'banana', 'carrot', 'daikon', 'relay')  ## 修改一处
 data_root='mmdetection/data/coco_zy'
 
 train_dataloader = dict(
@@ -58,7 +58,7 @@ model = dict(
             in_channels=256,
             fc_out_channels=1024,
             roi_feat_size=7,
-            num_classes=5,  ## 修改一处
+            num_classes=8,  ## 修改一处
             bbox_coder=dict(
                 type='DeltaXYWHBBoxCoder',
                 target_means=[0., 0., 0., 0.],
@@ -72,7 +72,7 @@ model = dict(
             num_convs=4,
             in_channels=256,
             conv_out_channels=256,
-            num_classes=5,
+            num_classes=8,
             loss_mask=dict(
                 type='CrossEntropyLoss', use_mask=True, loss_weight=1.0))))
 
