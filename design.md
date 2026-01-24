@@ -141,13 +141,11 @@ Ros2/
 │   └── action/
 │       └── ExecuteGrasp.action
 │
-├── zy_camera/                   # Camera driver (NEW)
-│   ├── nodes/
-│   │   └── camera_node.py
-│   ├── launch/
-│   │   └── camera_bringup.launch.py
-│   └── config/
-│       └── camera_params.yaml
+ ├── zy_camera/                   # Camera driver (NEW)
+│   ├── config/
+│   │   └── camera_params.yaml         # Camera configuration (ROS2 standard location)
+│   └── launch/
+│       └── camera_bringup.launch.py    # Launches realsense2_camera_node
 │
 ├── zy_vision/                 # Vision inference (MODIFIED)
 │   ├── nodes/
@@ -210,48 +208,136 @@ Ros2/
 
 ### zy_camera
 
-**Role**: RealSense camera driver
-**Primary Node**: `camera_node.py`
+**Role**: RealSense D435i camera driver wrapper (uses official realsense-ros)
+**No custom node**: Uses Intel's official `realsense2-camera` package
 
 **Functionality**:
 
-- Publish RGB images: `/camera/color/image_raw` (sensor_msgs/Image)
-- Publish depth images: `/camera/depth/image_raw` (sensor_msgs/Image)
-- Publish CameraInfo: `/camera/color/camera_info` (sensor_msgs/CameraInfo)
-- Publish CameraInfo: `/camera/depth/camera_info` (sensor_msgs/CameraInfo)
+- Configure and launch official realsense-ros driver
+- Set resolution, frame rate, alignment parameters
+- Configure topic namespace and names
+- Static TF publishing (camera to base_link transform)
 
-**Configuration** (`camera_params.yaml`):
+**Topics Published (by realsense-ros)**:
+
+- `/camera/camera/color/image_raw` (sensor_msgs/Image)
+- `/camera/camera/color/camera_info` (sensor_msgs/CameraInfo)
+- `/camera/camera/depth/image_rect_raw` (sensor_msgs/Image)
+- `/camera/camera/depth/camera_info` (sensor_msgs/CameraInfo)
+- `/camera/camera/aligned_depth_to_color/image_raw` (sensor_msgs/Image) - Aligned depth
+- `/camera/camera/aligned_depth_to_color/camera_info` (sensor_msgs/CameraInfo)
+
+**Configuration** (`launch/camera_bringup.launch.py`):
+
+```python
+# camera_bringup.launch.py - Launches realsense-ros with custom parameters
+from launch import LaunchDescription
+from launch_ros.actions import Node
+from ament_index_python.packages import get_package_share_directory
+
+def generate_launch_description():
+    return LaunchDescription([
+        Node(
+            package='realsense2_camera',
+            executable='realsense2_camera_node',
+            name='realsense2_camera_node',
+            parameters=[{
+                # Camera configuration
+                'camera_name': 'camera',
+                'camera_namespace': 'camera',
+
+                # Enable streams
+                'enable_color': True,
+                'enable_depth': True,
+                'enable_sync': True,
+
+                # D435i specific: enable IMU
+                'enable_gyro': True,
+                'enable_accel': True,
+                'unite_imu_method': '2',  # Linear interpolation
+
+                # Resolution and frame rate (optimized for grasping)
+                'rgb_camera.color_profile': '640x480x30',
+                'depth_module.depth_profile': '640x480x90',  # High FPS for grasping
+
+                # Align depth to color
+                'align_depth.enable': True,
+
+                # Filters (reduce noise)
+                'pointcloud.enable': False,  # Not needed for grasping
+                'spatial_filter.enable': True,
+                'temporal_filter.enable': True,
+
+                # Coordinate frames
+                'base_frame_id': 'camera_link',
+                'publish_tf': True,
+            }],
+            output='screen'
+        )
+    ])
+```
+
+**Configuration** (`launch/camera_params.yaml`):
 
 ```yaml
-camera:
-  width: 640
-  height: 480
-  publish_rate: 10.0  # Hz
+# Alternative: Use YAML file for camera parameters
+camera_name: camera
+camera_namespace: camera
 
-intrinsics:
-  color:
-    frame_id: "camera_color_optical_frame"
-    fx: 604.335
-    fy: 604.404
-    cx: 316.187
-    cy: 248.611
+# Stream configuration
+enable_color: true
+enable_depth: true
+enable_sync: true
 
-  depth:
-    frame_id: "camera_depth_optical_frame"
-    fx: 604.335
-    fy: 604.404
-    cx: 316.187
-    cy: 248.611
+# D435i IMU
+enable_gyro: true
+enable_accel: true
+unite_imu_method: 2  # Linear interpolation
+
+# Resolution and FPS
+rgb_camera:
+  color_profile: 640x480x30
+depth_module:
+  depth_profile: 640x480x90  # High FPS for dynamic grasping
+
+# Post-processing
+align_depth:
+  enable: true
+spatial_filter:
+  enable: true
+temporal_filter:
+  enable: true
+
+# Coordinate frames
+base_frame_id: camera_link
+publish_tf: true
 ```
 
 **Dependencies**:
 
-- `sensor_msgs` (standard ROS2)
-- `cv_bridge` (standard ROS2)
-- `pyrealsense2` (RealSense SDK)
+- `realsense2-camera` (Intel's official ROS2 driver - install via apt)
+- **No Python dependencies** (pure configuration package)
 
-**Key Design**: Publishes CameraInfo with intrinsic parameters so other nodes can perform pixel-to-3D conversion without
-hardcoded calibration data.
+**Installation**:
+
+```bash
+# Install realsense-ros on Ubuntu/Jetson
+sudo apt install ros-${ROS_DISTRO}-realsense2-camera
+
+# Or build from source (recommended for Jetson)
+git clone https://github.com/IntelRealSense/realsense-ros.git -b ros2-master
+cd realsense-ros
+colcon build
+source install/setup.bash
+```
+
+**Key Design**:
+- **No custom code**: Use Intel's battle-tested driver
+- **Configuration-only**: zy_camera provides launch files and parameters
+- **Automatic CameraInfo**: realsense-ros publishes CameraInfo automatically
+- **D435i optimized**: High depth FPS (90Hz) for dynamic grasping scenes
+- **Standard topics**: Uses realsense-ros topic naming convention
+- **Static TF**: camera_link transforms published in separate launch file
 
 ---
 
@@ -278,7 +364,7 @@ hardcoded calibration data.
 - Load AugmentCNN model
 - Embedded utility functions: `in_paint()`, `letterbox()`, `scale_coords()`
 
-**Configuration** (`inference_params.yaml`):
+**Configuration** (`config/inference_params.yaml`):
 
 ```yaml
 detection:
@@ -549,40 +635,7 @@ def generate_launch_description():
 
 #### camera_calib.launch.py
 
-Launches camera_node with intrinsic parameters from YAML:
-
-```python
-from launch import LaunchDescription
-from launch_ros.actions import Node
-from launch.substitutions import LaunchConfiguration
-
-
-def generate_launch_description():
-    # Declare camera parameters
-    return LaunchDescription([
-        Node(
-            package='zy_camera',
-            executable='camera_node',
-            name='camera_node',
-            parameters=[{
-                'width': 640,
-                'height': 480,
-                'fx': 604.335,
-                'fy': 604.404,
-                'cx': 316.187,
-                'cy': 248.611,
-                'publish_rate': 10.0
-            }],
-            output='screen'
-        )
-    ])
-```
-
-**Key Design**:
-
-- Intrinsic parameters passed from launch file to camera_node
-- CameraInfo published by camera_node using these parameters
-- Other nodes subscribe to `/camera/color/camera_info` to get intrinsics
+Removed (no longer needed - camera parameters loaded via config/camera_params.yaml by camera_bringup.launch.py)
 
 #### grasp_system.launch.py
 
@@ -593,7 +646,8 @@ from launch import LaunchDescription
 from launch_ros.actions import Node
 from launch.actions import IncludeLaunchDescription, TimerAction
 from launch.launch_description_sources import PythonLaunchDescriptionSource
-
+from ament_index_python.packages import get_package_share_directory
+import os
 
 def generate_launch_description():
     return LaunchDescription([
@@ -602,7 +656,7 @@ def generate_launch_description():
             PythonLaunchDescriptionSource(['static_tfs.launch.py'])
         ),
 
-        # 2. Camera node (with intrinsics)
+        # 2. Camera node (with parameters from config/)
         IncludeLaunchDescription(
             PythonLaunchDescriptionSource(['../zy_camera/launch/camera_bringup.launch.py'])
         ),
@@ -627,7 +681,21 @@ def generate_launch_description():
             ]
         ),
 
-        # 5. CTU communication + orchestration (delayed)
+        # 5. Gripper service (delayed)
+        TimerAction(
+            period=2.0,
+            actions=[
+                Node(
+                    package='zy_robot',
+                    executable='gripper_server',
+                    name='gripper_server',
+                    parameters=['config/robot_params.yaml'],
+                    output='screen'
+                )
+            ]
+        ),
+
+        # 6. CTU communication + orchestration (delayed)
         TimerAction(
             period=3.0,
             actions=[
@@ -645,6 +713,7 @@ def generate_launch_description():
 - Package independence: each package has its own bringup launch
 - Timed startup: ensures dependencies are ready
 - Central orchestration: single command starts entire system
+- Camera configuration loaded from `zy_camera/config/camera_params.yaml` (ROS2 standard)
 
 ---
 
@@ -781,23 +850,57 @@ def generate_launch_description():
 - [ ] Create zy_comm package structure
 - [ ] Setup package.xml and setup.py for new packages
 
-### Phase 2: Camera Node Development
+### Phase 2: Camera Package Development (Configuration-only)
 
-- [ ] Extract camera_node.py from zy_vision
-- [ ] Add CameraInfo publishing to camera_node.py
-- [ ] Add intrinsic parameters (fx, fy, cx, cy)
-- [ ] Create camera_params.yaml
-- [ ] Create camera_bringup.launch.py
+- [ ] Create zy_camera package structure (package.xml, CMakeLists.txt, launch/)
+- [ ] Install realsense2-camera driver:
+  - [ ] Ubuntu: `sudo apt install ros-${ROS_DISTRO}-realsense2-camera`
+  - [ ] Jetson: Build from source (librealsense2 + realsense-ros)
+- [ ] Create launch/camera_bringup.launch.py
+  - [ ] Configure realsense2_camera_node with D435i parameters
+  - [ ] Set resolution: color=640x480@30, depth=640x480@90
+  - [ ] Enable IMU (gyro, accel) for D435i
+  - [ ] Enable depth-to-color alignment
+  - [ ] Enable spatial/temporal filters
+- [ ] Create launch/camera_params.yaml (alternative to inline config)
+- [ ] Update zy_camera/package.xml with dependencies:
+  - [ ] realsense2-camera (exec_depend)
+  - [ ] ament_cmake (buildtool_depend)
+- [ ] Verify realsense-ros installation:
+  - [ ] `ros2 run realsense2_camera realsense2_camera_node --ros-args --help`
+  - [ ] `ros2 pkg xml realsense2_camera | grep realsense`
+- [ ] Test camera package:
+  - [ ] `ros2 launch zy_camera camera_bringup.launch.py`
+  - [ ] Verify topics: `/camera/camera/color/image_raw`, `/camera/camera/aligned_depth_to_color/image_raw`
+  - [ ] Verify CameraInfo: `ros2 topic echo /camera/camera/color/camera_info`
+  - [ ] Verify TF: `ros2 tf2 ls`
 
 ### Phase 3: Vision Node Refactoring
 
-- [ ] Remove camera_node.py from zy_vision
-- [ ] Add embedded utility functions to grasp_generator.py:
-    - [ ] in_paint()
-    - [ ] letterbox()
-    - [ ] scale_coords()
-- [ ] Update detection_server.py (no changes needed)
-- [ ] Create inference_params.yaml
+- [ ] Create zy_vision package structure (package.xml, setup.py, setup.cfg, resource/zy_vision)
+- [ ] Create detection_server.py
+  - [ ] Subscribe to `/camera/color/image_raw`
+  - [ ] Load MMDetection model from `models/mmdetection/configs/myconfig_zy.py`
+  - [ ] Implement `/detect_objects` service (DetectObjects.srv)
+  - [ ] Perform NMS filtering (score_threshold=0.8, iou_threshold=0.9)
+- [ ] Create grasp_generator.py
+  - [ ] Subscribe to `/camera/color/image_raw`, `/camera/depth/image_raw`
+  - [ ] Subscribe to `/camera/color/camera_info`, `/camera/depth/camera_info`
+  - [ ] Add embedded utility functions:
+    - [ ] in_paint() - depth map hole filling
+    - [ ] letterbox() - image resize with padding
+    - [ ] scale_coords() - coordinate scaling
+  - [ ] Implement `/generate_grasp` service (GenerateGrasp.srv)
+  - [ ] Load AugmentCNN model weights from `models/weights/epoch_20_last.pth`
+- [ ] Create zy_vision/config/inference_params.yaml
+- [ ] Create zy_vision/launch/inference_bringup.launch.py
+- [ ] Update zy_vision/package.xml with dependencies:
+  - [ ] zy_interfaces (msg, srv)
+  - [ ] sensor_msgs
+  - [ ] cv_bridge
+  - [ ] torch (PyTorch)
+  - [ ] mmdet (MMDetection)
+- [ ] Test: Verify detection and grasp generation services work independently
 
 ### Phase 4: Communication Node Development
 
@@ -854,14 +957,26 @@ def generate_launch_description():
 | `AugmentCNN`                          | zy_vision grasp_generator  | Service interface                            |
 | `utils/utils.py` (subset)             | zy_vision grasp_generator  | Embed in node                                |
 
-### From Existing ROS2
+### From Original Python System (Complete Migration)
 
-| Component                   | Action                            |
-|-----------------------------|-----------------------------------|
-| grasp_vision/camera_node.py | Move to zy_camera                 |
-| grasp_vision package        | Remove camera_node, update config |
-| All packages                | Update package.xml dependencies   |
-| All packages                | Update import paths               |
+| Component                             | To Package                      | Migration Tasks                                                                 |
+|---------------------------------------|---------------------------------|-------------------------------------------------------------------------------|
+| `camera.py` (RS class)                | zy_camera                       | Wrap in ROS2 node, add CameraInfo publishing, create launch file             |
+| `ctu_conn.py`                         | zy_comm/ctu_communication.py    | Extract TCP communication, separate protocol logic                              |
+| `ctu_protocol.py`                     | zy_comm/protocols/ctu_protocol.py| Keep protocol parsing logic intact                                           |
+| `gripper_zhiyuan.py`                  | zy_robot/gripper_server.py       | Wrap Modbus RTU in ROS2 service (GripperControl.srv)                         |
+| `RoboticArm.py`                       | zy_robot/arm_controller.py       | Wrap SDK in ROS2 node, add topic interfaces, implement grasp sequence          |
+| `grasp_zy_zhiyuan1215.py` (grasp)   | zy_robot/arm_controller.py       | Integrate grasp sequence into arm_controller                                  |
+| `grasp_zy_zhiyuan1215.py` (workflow) | zy_executor/ctu_orchestrator.py| Extract state machine, service clients, CTU command handling                   |
+| `MMDetection` integration             | zy_vision/detection_server.py    | Wrap in ROS2 service, add NMS filtering                                      |
+| `AugmentCNN` integration              | zy_vision/grasp_generator.py    | Wrap in ROS2 service, add coordinate transformation logic                      |
+| `utils/utils.py` (subset)             | zy_vision/grasp_generator.py    | Embed in_paint(), letterbox(), scale_coords() directly in node               |
+| `config.py` (Tcam2base, Rbase2cam)    | zy_bringup/launch/static_tfs.launch.py| Convert to TF2 static transforms                                        |
+| `config.py` (intrinsics)               | zy_bringup/config/camera_params.yaml| Extract camera intrinsic parameters                                        |
+| `config.py` (arm poses)               | zy_bringup/config/robot_params.yaml | Extract predefined poses (init, mid, place, etc.)                           |
+| `config.py` (network config)           | zy_bringup/config/comm_params.yaml | Extract CTU IP/port, robot IP/port                                           |
+
+**Note**: Since the Ros2/ directory was deleted/unusable, this is a complete migration from the original Python system to a new ROS2 architecture. No existing ROS2 code is being migrated.
 
 ---
 
@@ -869,13 +984,30 @@ def generate_launch_description():
 
 ### Type 1: Runtime Parameters (YAML)
 
-**Location**: `zy_bringup/config/*.yaml`
+**Location**: `zy_bringup/config/*.yaml` (ROS2 standard)
 **Examples**:
 
-- Camera resolution, publish rate
-- Robot IP, port, speed
-- Model paths, device selection
-- Thresholds (NMS, confidence)
+**Camera parameters** (`zy_camera/config/camera_params.yaml`):
+- Resolution: color=640x480@30, depth=640x480@90
+- IMU enable: gyro/accel (D435i)
+- Filters: spatial, temporal
+- Alignment: depth-to-color
+
+**Vision parameters** (`zy_vision/config/inference_params.yaml`):
+- MMDetection config and checkpoint
+- AugmentCNN model weights
+- NMS thresholds
+
+**Robot parameters** (`zy_robot/config/robot_params.yaml`):
+- Arm IP, port, speed, poses
+- Gripper max position, baudrate
+
+**Communication parameters** (`zy_comm/config/comm_params.yaml`):
+- CTU IP, port, heartbeat interval
+- Protocol SOF, CRC polynomial
+
+**Orchestration parameters** (`zy_executor/config/executor_params.yaml`):
+- Max attempts, timeout values
 
 **Access Pattern**:
 
@@ -982,6 +1114,435 @@ transform = tf_buffer.lookup_transform('camera_color_optical_frame', 'base_link'
 **Risk**: Multiple topics/services for inter-package communication
 **Mitigation**: Clear documentation, visualization with `rqt_graph`, simplified data flow (no intermediate executor
 layer)
+
+---
+
+## Detailed Implementation Notes
+
+### Package Directory Templates
+
+#### zy_camera
+```
+zy_camera/
+├── package.xml                    # Required: realsense2-camera (exec_depend)
+├── CMakeLists.txt                # ament_cmake (no Python code)
+├── config/
+│   └── camera_params.yaml         # Camera configuration (ROS2 standard location)
+└── launch/
+    └── camera_bringup.launch.py    # Launches realsense2_camera_node
+```
+
+**Key Implementation** (launch/camera_bringup.launch.py):
+```python
+# Launches Intel's official realsense-ros driver
+# No custom camera_node.py needed!
+
+from launch import LaunchDescription
+from launch_ros.actions import Node
+from launch.actions import PythonLaunchDescriptionSource
+from ament_index_python.packages import get_package_share_directory
+import os
+
+def generate_launch_description():
+    # Load config file from config/ directory (ROS2 standard)
+    pkg_share = get_package_share_directory('zy_camera')
+    config_file = os.path.join(pkg_share, 'config', 'camera_params.yaml')
+    
+    return LaunchDescription([
+        Node(
+            package='realsense2_camera',
+            executable='realsense2_camera_node',
+            name='realsense2_camera_node',
+            parameters=[
+                PythonLaunchDescriptionSource(config_file)
+            ],
+            output='screen'
+        )
+    ])
+```
+
+#### zy_vision
+```
+zy_vision/
+├── package.xml                    # Required: zy_interfaces, sensor_msgs, cv_bridge, torch, mmdet
+├── setup.py                      # Entry points: detection_server, grasp_generator
+├── setup.cfg
+├── resource/
+│   └── zy_vision
+├── zy_vision/
+│   ├── __init__.py
+│   ├── detection_server.py
+│   └── grasp_generator.py
+└── launch/
+    └── inference_bringup.launch.py
+```
+
+**Key Implementation**:
+```python
+# grasp_generator.py - Coordinate transformation using CameraInfo
+from sensor_msgs.msg import CameraInfo
+
+def grasp_img2real(self, row, col, depth, camera_info):
+    # Use intrinsic matrix from CameraInfo (published by realsense-ros)
+    K = np.array(camera_info.k).reshape(3, 3)
+
+    # Pixel to camera frame
+    x = (col - camera_info.k[2]) * depth / camera_info.k[0]
+    y = (row - camera_info.k[5]) * depth / camera_info.k[4]
+    z = depth
+
+    # Transform to base frame using TF2
+    point_camera = PointStamped()
+    point_camera.header.frame_id = "camera_color_optical_frame"
+    point_camera.point.x = x
+    point_camera.point.y = y
+    point_camera.point.z = z
+
+    point_base = self.tf_buffer.transform(
+        point_camera,
+        "base_link",
+        timeout=Duration(seconds=0.1)
+    )
+
+    return [point_base.point.x, point_base.point.y, point_base.point.z]
+
+# Image preprocessing (migrated from original system)
+def preprocess_images(self, color_msg, depth_msg):
+    # Subscribe to realsense-ros topics
+    # /camera/camera/color/image_raw
+    # /camera/camera/aligned_depth_to_color/image_raw
+
+    # Convert ROS messages to OpenCV
+    cv_bridge = CvBridge()
+    color_image = cv_bridge.imgmsg_to_cv2(color_msg, desired_encoding="bgr8")
+    depth_image = cv_bridge.imgmsg_to_cv2(depth_msg, desired_encoding="passthrough")
+
+    # Apply image preprocessing (from original camera.py)
+    # 1. Crop depth image (remove left/right edges)
+    depth_image = depth_image[:, 80:560, :]  # Crop to 480x480
+
+    # 2. Inpaint depth holes (fill zeros)
+    mask = (depth_image == 0).astype(np.uint8)
+    depth_image = cv2.inpaint(depth_image, mask, 3, cv2.INPAINT_NS)
+
+    # 3. Convert depth to meters (from mm)
+    depth_image = depth_image.astype(np.float32) / 1000.0
+
+    return color_image, depth_image
+```
+
+#### zy_robot
+```
+zy_robot/
+├── package.xml                    # Required: sensor_msgs, std_msgs, geometry_msgs
+├── setup.py                      # Entry points: arm_controller, gripper_server
+├── setup.cfg
+├── resource/
+│   └── zy_robot
+├── zy_robot/
+│   ├── __init__.py
+│   ├── arm_controller.py
+│   └── gripper_server.py
+└── launch/
+    └── robot_bringup.launch.py
+```
+
+**Key Implementation**:
+```python
+# arm_controller.py - Grasp sequence
+from zy_interfaces.msg import GraspPose
+from std_msgs.msg import String
+
+def execute_grasp_sequence(self, grasp_pose: GraspPose):
+    # 1. Move to mid pose
+    self.move_to_pose(self.mid_pose)
+    self.wait_for_completion()
+
+    # 2. Move to approach pose (above grasp)
+    approach_pose = grasp_pose.copy()
+    approach_pose.position.z += 0.05  # 5cm above
+    self.move_to_pose(approach_pose)
+
+    # 3. Move to grasp pose
+    self.move_to_pose(grasp_pose)
+
+    # 4. Close gripper
+    self.gripper_client.call_async(GripperControl.Request(position=0))
+
+    # 5. Lift to place pose
+    self.move_to_pose(self.place_mid_pose)
+    self.move_to_pose(self.place_last_pose)
+
+    # 6. Open gripper
+    self.gripper_client.call_async(GripperControl.Request(position=1))
+```
+
+#### zy_comm
+```
+zy_comm/
+├── package.xml                    # Required: std_msgs, zy_interfaces
+├── setup.py                      # Entry point: ctu_communication
+├── setup.cfg
+├── resource/
+│   └── zy_comm
+├── zy_comm/
+│   ├── __init__.py
+│   ├── protocols/
+│   │   └── ctu_protocol.py
+│   └── ctu_communication.py
+└── launch/
+    └── comm_bringup.launch.py
+```
+
+**Key Implementation**:
+```python
+# ctu_communication.py - TCP to ROS2 bridge
+import socket
+from zy_interfaces.msg import CTUCommand
+
+class CTUCommunication(Node):
+    def __init__(self):
+        super().__init__('ctu_communication')
+        self.ctu_pub = self.create_publisher(CTUCommand, '/ctu/command', 10)
+        self.executor_status_sub = self.create_subscription(
+            ExecutorStatus,
+            '/executor/status',
+            self.executor_status_callback,
+            10
+        )
+
+        # TCP connection
+        self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.socket.connect((ctu_ip, ctu_port))
+
+        # Threads
+        self.heartbeat_thread = threading.Thread(target=self.heartbeat_loop)
+        self.listen_thread = threading.Thread(target=self.listen_loop)
+        self.heartbeat_thread.start()
+        self.listen_thread.start()
+
+    def listen_loop(self):
+        while rclpy.ok():
+            # Receive TCP data
+            data = self.socket.recv(1024)
+            if not data:
+                break
+
+            # Parse binary protocol (SOF + LEN + DATA + CRC16)
+            command = self.parse_ctu_protocol(data)
+
+            # Publish to ROS2
+            self.ctu_pub.publish(command)
+```
+
+#### zy_executor
+```
+zy_executor/
+├── package.xml                    # Required: std_msgs, zy_interfaces
+├── setup.py                      # Entry point: ctu_orchestrator
+├── setup.cfg
+├── resource/
+│   └── zy_executor
+├── zy_executor/
+│   ├── __init__.py
+│   └── ctu_orchestrator.py
+└── launch/
+    └── executor_bringup.launch.py
+```
+
+**Key Implementation**:
+```python
+# ctu_orchestrator.py - State machine
+from enum import Enum
+from zy_interfaces.msg import CTUCommand, ExecutorStatus
+
+class State(Enum):
+    IDLE = 0
+    DETECTING = 1
+    PLANNING = 2
+    EXECUTING = 3
+
+class CTUOrchestrator(Node):
+    def __init__(self):
+        super().__init__('ctu_orchestrator')
+        self.state = State.IDLE
+        self.grasp_running = False
+        self.grasp_count = 0
+        self.inverse_failures = 0
+
+        # Service clients
+        self.detect_client = self.create_client(DetectObjects, '/detect_objects')
+        self.grasp_client = self.create_client(GenerateGrasp, '/generate_grasp')
+        self.gripper_client = self.create_client(GripperControl, '/gripper_control')
+
+        # Topic publishers/subscribers
+        self.arm_cmd_pub = self.create_publisher(GraspCommand, '/arm_grasp_command', 10)
+        self.executor_status_pub = self.create_publisher(ExecutorStatus, '/executor/status', 10)
+        self.ctu_cmd_sub = self.create_subscription(CTUCommand, '/ctu/command', self.ctu_callback, 10)
+        self.arm_status_sub = self.create_subscription(String, '/arm_status', self.arm_status_callback, 10)
+
+    def ctu_callback(self, msg: CTUCommand):
+        if msg.command == CTUCommand.CMD_START_SORTING:
+            self.run_grasp_sequence()
+
+    def run_grasp_sequence(self):
+        if self.grasp_running:
+            return
+
+        self.grasp_running = True
+        self.state = State.DETECTING
+
+        # Call detection service
+        future = self.detect_client.call_async(DetectObjects.Request())
+
+        # Wait for result
+        rclpy.spin_until_future_complete(self, future)
+        detection_result = future.result()
+
+        if detection_result.success:
+            self.state = State.PLANNING
+            # Call grasp generation
+            future = self.grasp_client.call_async(GenerateGrasp.Request(
+                label=detection_result.label,
+                bbox=detection_result.bbox
+            ))
+            # ... continue with grasp execution
+```
+
+#### zy_interfaces
+```
+zy_interfaces/
+├── package.xml                    # Required: rosidl_default_generators, std_msgs
+├── CMakeLists.txt
+└── zy_interfaces/
+    ├── msg/
+    │   ├── DetectionResult.msg
+    │   ├── GraspPose.msg
+    │   ├── GraspCommand.msg
+    │   ├── CTUCommand.msg
+    │   └── ExecutorStatus.msg
+    ├── srv/
+    │   ├── DetectObjects.srv
+    │   ├── GenerateGrasp.srv
+    │   └── GripperControl.srv
+    └── action/
+        └── ExecuteGrasp.action
+```
+
+**Message Definitions**:
+```yaml
+# msg/CTUCommand.msg
+uint8 CMD_START_SORTING=0x70
+uint8 CMD_ADJUST_SPEED=0x71
+uint8 CMD_START_GRASP=0x81
+uint8 CMD_GRASP_COMPLETE=0x82
+
+uint8 command
+string[] parameters  # Variable arguments based on command
+```
+
+```yaml
+# msg/ExecutorStatus.msg
+uint8 STATUS_IDLE=0
+uint8 STATUS_DETECTING=1
+uint8 STATUS_PLANNING=2
+uint8 STATUS_EXECUTING=3
+uint8 STATUS_ERROR=4
+
+uint8 status
+int32 grasp_count
+int32 inverse_failures
+string error_message
+```
+
+#### zy_bringup
+```
+zy_bringup/
+├── package.xml                    # Required: ament_cmake
+├── CMakeLists.txt
+├── launch/
+│   ├── grasp_system.launch.py
+│   ├── static_tfs.launch.py
+│   └── camera_calib.launch.py
+└── config/
+    ├── camera_params.yaml
+    ├── robot_params.yaml
+    ├── comm_params.yaml
+    └── inference_params.yaml
+```
+
+### Build and Test Verification
+
+**Build Command**:
+```bash
+cd Ros2
+colcon build --symlink-install --packages-select zy_interfaces
+colcon build --symlink-install --packages-select zy_camera
+colcon build --symlink-install --packages-select zy_vision
+colcon build --symlink-install --packages-select zy_robot
+colcon build --symlink-install --packages-select zy_comm
+colcon build --symlink-install --packages-select zy_executor
+colcon build --symlink-install --packages-select zy_bringup
+```
+
+**Verification Steps**:
+1. **Check package built successfully**:
+   ```bash
+   ls install/zy_camera/lib/zy_camera/camera_node
+   ls install/zy_vision/lib/zy_vision/detection_server
+   ```
+
+2. **Verify topic/service list**:
+   ```bash
+   ros2 topic list  # Should show all topics from design
+   ros2 service list  # Should show all services from design
+   ```
+
+3. **Test camera node**:
+   ```bash
+   ros2 launch zy_camera camera_bringup.launch.py
+   # In another terminal:
+   ros2 topic echo /camera/color/image_raw
+   ros2 topic echo /camera/color/camera_info
+   ```
+
+4. **Test detection service**:
+   ```bash
+   ros2 launch zy_vision inference_bringup.launch.py
+   # In another terminal:
+   ros2 service call /detect_objects zy_interfaces/srv/DetectObjects "{image: ...}"
+   ```
+
+5. **Test full system**:
+   ```bash
+   ros2 launch zy_bringup grasp_system.launch.py
+   # Verify all nodes are running:
+   ros2 node list
+   ```
+
+### Critical Dependencies Check
+
+**Before Starting Implementation**:
+```bash
+# Python packages
+python3 -c "import pyrealsense2; print('pyrealsense2: OK')"
+python3 -c "import torch; print('torch:', torch.__version__)"
+python3 -c "import mmdet; print('mmdet:', mmdet.__version__)"
+python3 -c "import cv2; print('opencv:', cv2.__version__)"
+
+# ROS2 packages
+ros2 pkg list | grep zy_  # Should list all zy_* packages after build
+ros2 interface show sensor_msgs/msg/Image  # Should show message definition
+```
+
+**Missing Dependencies** (if any):
+```bash
+# Install on Ubuntu/Jetson
+sudo apt install ros-${ROS_DISTRO}-sensor-msgs
+sudo apt install ros-${ROS_DISTRO}-cv-bridge
+sudo apt install ros-${ROS_DISTRO}-tf2-ros
+sudo apt install ros-${ROS_DISTRO}-geometry-msgs
+```
 
 ---
 
