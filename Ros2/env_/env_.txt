@@ -1,5 +1,0 @@
-pyrealsense2
-torch==1.8
-mmengine==0.10.7
-mmcv==2.1.0
-mmdet==3.3.0

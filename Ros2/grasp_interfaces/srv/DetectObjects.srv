@@ -1,7 +1,0 @@
-# 目标检测服务
-sensor_msgs/Image color_image
----
-DetectionResult result
-bool success
-string message
-
