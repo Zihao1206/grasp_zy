@@ -19,7 +19,6 @@ from models.gqcnn_server.augment_cnn import AugmentCNN
 import models.genotypes as gt
 import datetime
 from Robotic_Arm.rm_robot_interface import *
-from Robotic_Arm.rm_ctypes_wrap import rm_inverse_kinematics_params_t
 from mmdet.apis import init_detector, inference_detector
 from models.nms import nms
 from mmdet.registry import VISUALIZERS
