@@ -33,7 +33,7 @@ class CollisionDetected(Exception):
 class Grasp:
     def __init__(self, hardware=False):
         # self.robot_speed = config.robot_speed 
-        self.robot_speed = 20
+        self.robot_speed = 30
         self.hardware = hardware
         self.init_pose = [-0.226100, -0.00309, 0.522900, -0.010, 0.028, 2.650]
         self.camera = camera.RS(640, 480)
@@ -573,47 +573,24 @@ class Grasp:
 
     
 if __name__ == '__main__':
+    # #GUI选取
+    # import argparse
+    
+    # parser = argparse.ArgumentParser(description='Robot Grasping Control')
+    # parser.add_argument('--label', type=str, default='relay', 
+    #                     choices=['terminal', 'limit', 'voltage', 'soap', 'banana', 'carrot', 'daikon', 'relay'],
+    #                     help='Target object to grasp')
+    # parser.add_argument('--vis', action='store_true', default=True, help='Visualization flag')
+    
+    # args = parser.parse_args()
+    
+    # grasp = Grasp(hardware=True)
+    # grasp.obj_grasp(label=args.label, vis=args.vis)
+
     grasp = Grasp(hardware=True)
-
-
     # grasp.obj_grasp(label=config.type,vis=True)
-    grasp.obj_grasp(label='carrot',vis=True)
-
- 
-# def on_submit():
-#     label = entry.get()  # 获取用户输入的标签
-#     if label:
-#         grasp.action_yolo(label=label, vis=True)
-#     else:
-#         messagebox.showwarning("Input Error", "Please enter a label.")
-
-# if __name__ == '__main__':
-#     grasp = Grasp(hardware=True)
-
-#     # 创建主窗口
-#     root = tk.Tk()
-#     root.title("机器人智能分拣界面")
-
-# # 设置窗口的网格布局权重
-#     root.grid_rowconfigure(0, weight=1)  # 第一行可拉伸
-#     root.grid_columnconfigure(0, weight=1)  # 第一列可拉伸
-
-#     custom_font = font.Font(family="微软雅黑", size=12, weight="bold")  # 字体类型、大小和粗细
-#     custom_font1 = font.Font(family="Times New Roman", size=14, weight="bold")  # 字体类型、大小和粗细
-
-#     # 创建输入框
-#     label = tk.Label(root, text="请输入待抓取对象:", font=custom_font)
-#     label.grid(row=0, column=0, padx=10, pady=10, sticky="ew")  # 放置在网格中，并设置 sticky 参数
-
-#     entry = tk.Entry(root, font=custom_font1)
-#     entry.grid(row=1, column=0, padx=10, pady=10, sticky="ew")  # 放置在网格中，并设置 sticky 参数
-
-#     # 创建提交按钮
-#     submit_button = tk.Button(root, text="执行抓取", font=custom_font, command=on_submit)
-#     submit_button.grid(row=2, column=0, padx=10, pady=10, sticky="ew")  # 放置在网格中，并设置 sticky 参数
-
-#     # 运行主循环
-#     root.mainloop()
+    grasp.obj_grasp(label='daikon',vis=True)
+    # 'terminal', 'limit', 'voltage', 'soap', 'banana', 'carrot', 'daikon', 'relay'
 
 
 
