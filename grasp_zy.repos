@@ -1,0 +1,38 @@
+# grasp_zy.repos
+# External dependencies for grasp_zy robot grasping system
+# 
+# Usage:
+#   vcs import src < grasp_zy.repos
+#   rosdep install --from-paths src --ignore-src -y --rosdistro humble
+#   colcon build --symlink-install
+
+repositories:
+  # ============================================================
+  # Robot Arm Driver
+  # ============================================================
+  # Official RM robot ROS2 driver for RM65/RM75/ECO series
+  # Includes: rm_driver, rm_description, rm_control, rm_moveit2_config
+  ros2_rm_robot:
+    type: git
+    url: https://github.com/RealManRobot/ros2_rm_robot.git
+    version: humble
+
+  # ============================================================
+  # Camera Driver
+  # ============================================================
+  # Intel RealSense D435 camera ROS2 driver
+  # Note: Consider using apt package instead for stability:
+  #   sudo apt install ros-${ROS_DISTRO}-realsense2-camera
+  realsense-ros:
+    type: git
+    url: https://github.com/IntelRealSense/realsense-ros.git
+    version: 4.55.1
+
+  # ============================================================
+  # Optional: MoveIt2 (usually installed via apt)
+  # ============================================================
+  # Uncomment if you need source build of MoveIt2
+  # moveit2:
+  #   type: git
+  #   url: https://github.com/moveit/moveit2.git
+  #   version: humble
