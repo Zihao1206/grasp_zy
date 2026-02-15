@@ -1,6 +1,6 @@
 # AGENTS.md
 
-**Generated:** 2026-02-15 | **Commit:** 756228d | **Branch:** dev
+**Generated:** 2026-02-15 | **Commit:** 732cb6c | **Branch:** dev
 
 **注意：请用中文回答或者编写文档**
 
@@ -11,8 +11,10 @@
 基于视觉的机器人抓取系统，Jetson Orin NX部署，CTU分拣任务。Intel RealSense相机 + PyTorch/MMDetection检测 + RM65机械臂控制。
 
 **架构状态**：
-- **原始Python系统**（根目录）：单体式，直接运行 ✅
-- **ROS2系统**（Ros2/）：**已删除**（commit fe53d23），设计文档见 `design.md`
+- **legacy/**（原始Python系统）：已归档，维护模式
+- **ROS2系统**：开发中，设计文档见 `legacy/design.md`
+
+> **项目正在向 ROS2 架构迁移中**
 
 ---
 
@@ -30,15 +32,14 @@
 ## 核心命令
 
 ```bash
-# 启动
+# 启动（旧版代码已移至 legacy/）
 conda activate zy_torch
-python grasp_zy_zhiyuan1215.py  # 主抓取程序（注意：不是README说的test.py）
-python ctu_conn.py              # CTU通信服务
+python legacy/grasp_zy_zhiyuan1215.py  # 主抓取程序
+python legacy/ctu_conn.py              # CTU通信服务
 
 # 调试
-python RoboticArm.py             # 机械臂关节调试
-python RoboticGripper.py         # 夹爪调试
-python camera.py                 # 相机测试
+python legacy/robotic_arm_package/RoboticArm.py  # 机械臂关节调试
+python legacy/camera.py                          # 相机测试
 ```
 
 ---
@@ -104,43 +105,47 @@ GoogsMapping = {
 
 ```
 grasp_zy/
-├── grasp_zy_zhiyuan1215.py  # 主抓取程序 (27KB)
-├── ctu_conn.py              # CTU通信服务
-├── ctu_protocol.py          # CTU协议定义
-├── config.py                # 全局配置
-├── camera.py                # 相机接口
-├── gripper_zhiyuan.py       # 夹爪控制
-├── utils/                   # 工具库 [见 utils/AGENTS.md]
-├── robotic_arm_package/     # 机械臂SDK [见 robotic_arm_package/AGENTS.md]
-├── models/
-│   ├── gqcnn_server/        # AugmentCNN抓取生成
-│   ├── genotypes.py         # NAS架构定义
-│   └── mmdetection/         # MMDetection (第三方)
-├── graspnet-baseline/       # GraspNet基线 (第三方) [见 graspnet-baseline/AGENTS.md]
-├── graspnetAPI/             # GraspNet API (第三方)
-├── Test/Code/               # 调试工具
-├── others/                  # 历史脚本
-└── prepare/                 # 数据准备工具
+├── legacy/                        # 原始实现（已归档）
+│   ├── grasp_zy_zhiyuan1215.py  # 主抓取程序 (27KB)
+│   ├── ctu_conn.py              # CTU通信服务
+│   ├── ctu_protocol.py          # CTU协议定义
+│   ├── config.py                # 全局配置
+│   ├── camera.py                # 相机接口
+│   ├── gripper_zhiyuan.py       # 夹爪控制
+│   ├── utils/                   # 工具库 [见 legacy/utils/AGENTS.md]
+│   ├── robotic_arm_package/     # 机械臂SDK [见 legacy/robotic_arm_package/AGENTS.md]
+│   ├── models/
+│   │   ├── gqcnn_server/        # AugmentCNN抓取生成
+│   │   ├── genotypes.py         # NAS架构定义
+│   │   └── mmdetection/         # MMDetection (第三方)
+│   ├── graspnet-baseline/       # GraspNet基线 (第三方)
+│   ├── graspnetAPI/             # GraspNet API (第三方)
+│   ├── Test/Code/               # 调试工具
+│   ├── others/                  # 历史脚本
+│   ├── prepare/                 # 数据准备工具
+│   ├── design.md                # ROS2 设计文档
+│   └── design.zh.md             # ROS2 设计文档（中文）
+├── README.md
+└── AGENTS.md                     # 本文档
 ```
 
 ### 结构偏差警告
 
 | 问题 | 文件 | 影响 |
 |------|------|------|
-| 文件名含括号 | `camera(2).py` | Shell/git需转义 |
-| 无扩展名 | `RM_control` | 编辑器无语法高亮 |
-| 日期后缀 | `grasp_zy_zhiyuan1215.py` | 版本控制反模式 |
-| 数据在根目录 | `single_zy.txt` | 应在data/目录 |
+| 文件名含括号 | `legacy/camera(2).py` | Shell/git需转义 |
+| 无扩展名 | `legacy/RM_control` | 编辑器无语法高亮 |
+| 日期后缀 | `legacy/grasp_zy_zhiyuan1215.py` | 版本控制反模式 |
 
 ---
 
 ## ROS2重构指南
 
-**⚠️ 重要更新**: `Ros2/` 目录已于 commit `fe53d23` 删除。完整的65个文件实现被移除。
+**⚠️ 重要更新**: 原始代码已移至 `legacy/` 目录。ROS2系统正在开发中。
 
 ### 系统对比
 
-| 维度 | 原系统 | ROS2系统 |
+| 维度 | 原系统 (legacy/) | ROS2系统 |
 |------|--------|----------|
 | 架构 | 单一脚本(600+行) | 5个功能包，模块化 |
 | 接口 | 函数调用 | ROS2话题/服务/动作 |
