@@ -1,5 +1,7 @@
 # AGENTS.md
 
+**Generated:** 2026-02-15 | **Commit:** 756228d | **Branch:** dev
+
 **注意：请用中文回答或者编写文档**
 
 ---
@@ -8,9 +10,9 @@
 
 基于视觉的机器人抓取系统，Jetson Orin NX部署，CTU分拣任务。Intel RealSense相机 + PyTorch/MMDetection检测 + RM65机械臂控制。
 
-**架构状态**：两套并行实现
-- **原始Python系统**（根目录）：单体式，直接运行
-- **ROS2系统**（Ros2/）：模块化，推荐生产环境
+**架构状态**：
+- **原始Python系统**（根目录）：单体式，直接运行 ✅
+- **ROS2系统**（Ros2/）：**已删除**（commit fe53d23），设计文档见 `design.md`
 
 ---
 
@@ -98,7 +100,43 @@ GoogsMapping = {
 
 ---
 
+## 项目结构
+
+```
+grasp_zy/
+├── grasp_zy_zhiyuan1215.py  # 主抓取程序 (27KB)
+├── ctu_conn.py              # CTU通信服务
+├── ctu_protocol.py          # CTU协议定义
+├── config.py                # 全局配置
+├── camera.py                # 相机接口
+├── gripper_zhiyuan.py       # 夹爪控制
+├── utils/                   # 工具库 [见 utils/AGENTS.md]
+├── robotic_arm_package/     # 机械臂SDK [见 robotic_arm_package/AGENTS.md]
+├── models/
+│   ├── gqcnn_server/        # AugmentCNN抓取生成
+│   ├── genotypes.py         # NAS架构定义
+│   └── mmdetection/         # MMDetection (第三方)
+├── graspnet-baseline/       # GraspNet基线 (第三方) [见 graspnet-baseline/AGENTS.md]
+├── graspnetAPI/             # GraspNet API (第三方)
+├── Test/Code/               # 调试工具
+├── others/                  # 历史脚本
+└── prepare/                 # 数据准备工具
+```
+
+### 结构偏差警告
+
+| 问题 | 文件 | 影响 |
+|------|------|------|
+| 文件名含括号 | `camera(2).py` | Shell/git需转义 |
+| 无扩展名 | `RM_control` | 编辑器无语法高亮 |
+| 日期后缀 | `grasp_zy_zhiyuan1215.py` | 版本控制反模式 |
+| 数据在根目录 | `single_zy.txt` | 应在data/目录 |
+
+---
+
 ## ROS2重构指南
+
+**⚠️ 重要更新**: `Ros2/` 目录已于 commit `fe53d23` 删除。完整的65个文件实现被移除。
 
 ### 系统对比
 
@@ -150,6 +188,37 @@ Ros2/
 5. **协议**：CTU是**二进制**协议，非文本
 6. **恢复**：有自动重连/重试，但次数有限
 7. **硬件**：RealSense + RM65 SDK必须正确安装
+
+---
+
+## 反模式 (Anti-Patterns)
+
+### 禁止
+
+- ❌ 更改矩阵乘法顺序 `S @ T @ R` (utils/datasets.py:563)
+- ❌ 直接在BGR图像上使用Matplotlib显示
+- ❌ 使用 `import *` 导入 (污染命名空间)
+- ❌ 使用 `time.sleep()` 替代事件驱动机制
+- ❌ 修改 `dex_models` 文件夹名称 (graspnetAPI)
+
+### 警告
+
+- ⚠️ `cornell_data.py` 有两个版本，可能有差异
+- ⚠️ SDK调用**不是线程安全**，ROS2需加互斥锁
+- ⚠️ 逆运动学可能失败，需检查返回tag
+
+### 类型安全
+
+- 19处 `# type: ignore` 在第三方库中
+- 核心项目文件无显式类型忽略
+
+---
+
+## 技术债务
+
+- 218个 TODO/FIXME 标记（主要在第三方库）
+- 174处通配符导入 (`import *`)
+- 23处阻塞式 `time.sleep()` 调用
 
 ---
 
