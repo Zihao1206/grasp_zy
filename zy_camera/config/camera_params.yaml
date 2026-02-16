@@ -1,0 +1,67 @@
+# RealSense D435 Camera Configuration
+# Production-validated settings for zy grasping system
+#
+# Note: D435 has NO IMU (unlike D435i)
+# Note: Cropping is handled in zy_vision, not here
+
+# Camera namespace and naming
+camera_name: 'camera'
+camera_namespace: 'camera'
+
+# Stream configuration
+enable_color: true
+enable_depth: true
+enable_sync: true
+
+# D435 has NO IMU - keep these disabled
+enable_gyro: false
+enable_accel: false
+enable_infra1: false
+enable_infra2: false
+
+# RGB Camera configuration
+# Production: 640x480 @ 30fps
+rgb_camera:
+  color_width: 640
+  color_height: 480
+  color_fps: 30
+
+# Depth Module configuration
+# Production: 640x480 @ 30fps (stable for grasping)
+depth_module:
+  depth_width: 640
+  depth_height: 480
+  depth_fps: 30
+
+# Depth alignment to color frame
+# Critical for accurate grasp coordinate calculation
+align_depth:
+  enable: true
+
+# Depth post-processing filters
+# Reduce noise and fill holes in depth map
+spatial_filter:
+  enable: true
+
+temporal_filter:
+  enable: true
+
+hole_filling_filter:
+  enable: false
+
+decimation_filter:
+  enable: false
+
+# Point cloud - not needed for grasping
+pointcloud:
+  enable: false
+
+# TF frame configuration
+# Static transform camera_link -> base_link is published by zy_bringup
+base_frame_id: 'camera_link'
+depth_frame_id: 'camera_depth_frame'
+color_frame_id: 'camera_color_frame'
+publish_tf: true
+
+# Initial reset (helps with some firmware issues)
+initial_reset: false

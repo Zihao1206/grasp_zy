@@ -1,0 +1,23 @@
+# Depth Visualizer Parameters
+# Converts depth images (0~1m) to pseudo-color images for visualization
+
+# Depth range for normalization (meters)
+# Values outside this range will be clipped
+min_depth: 0.0
+max_depth: 1.0
+
+# OpenCV colormap ID
+# Common options:
+#   2  = COLORMAP_JET (classic rainbow: red=near, blue=far)
+#   14 = COLORMAP_INFERNO (perceptually uniform)
+#   20 = COLORMAP_TURBO (improved JET, recommended)
+colormap: 20
+
+# Depth scale factor to convert raw values to meters
+# RealSense D435 outputs 16UC1 in millimeters
+# 0.001 converts mm -> m
+depth_scale: 0.001
+
+# Topic names (can be overridden in launch file)
+# input_topic: /camera/aligned_depth_to_color/image_raw
+# output_topic: /camera/depth_colored/image_raw
