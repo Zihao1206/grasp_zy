@@ -3,12 +3,12 @@ import socket
 import threading
 import time
 import traceback
-from grasp_zy_test import Grasp
+from grasp_zy_zhiyuan1215 import Grasp
 from ctu_protocol import CmdID, CTUProtocol, Command
 
 GoogsMapping = {
-    ## 肥皂
-    "1": "soap",
+    # 白萝卜
+    "1": "daikon",
     # 空气开关（白色）
     "2": "interrupter",
     # 接线端子（黑色） 
@@ -17,6 +17,8 @@ GoogsMapping = {
     "4": "limit",
     # 电压采集模块
     "5": "voltage"
+    ## 肥皂
+    # "1": "soap",
 }
 
 

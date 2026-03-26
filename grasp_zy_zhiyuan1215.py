@@ -370,6 +370,50 @@ class Grasp:
             return items.index(target)
         except ValueError:
             return None
+    ### 判断是否存在指定物体
+    def detect_obj(self, label):
+        depth_img, color_img = self.camera.get_img()
+
+        depth_img = self.in_paint(depth_img)
+        depth_img = cv2.GaussianBlur(depth_img, (3, 3), 0)/1000
+        depth_img = depth_img[:, 80:560]
+        color_img = color_img[:, 80:560, :]
+        color_img_raw = color_img.copy()
+        depth_img_raw = depth_img.copy()
+
+        # depth_img = cv2.imread('rgbd/241017_215857d.tiff', cv2.IMREAD_UNCHANGED)
+        # depth_img = np.full((480, 480), 1, dtype=np.float32)
+        # color_img = cv2.imread('zy/zy_rgb_319.jpg')
+        # color_img_raw = color_img.copy()
+        # depth_img_raw = depth_img.copy()
+
+        pre = inference_detector(self.det_model, color_img) # numpy array BGR
+
+        # img = color_img[..., ::-1]
+        # visual = VISUALIZERS.build(self.det_model.cfg.visualizer)
+        # visual.dataset_meta = self.det_model.dataset_meta
+        # visual.add_datasample(
+        #     'pre',
+        #     img,
+        #     data_sample=pre,
+        #     draw_gt=True,
+        #     show=True)
+        # img_with_bbox = visual.get_image()
+        # cv2.imwrite('outputs/1.jpg', img_with_bbox[:, :, ::-1])
+        classes = self.det_model.dataset_meta['classes']
+        bboxes = pre.pred_instances.bboxes.cpu().numpy()
+        scores = pre.pred_instances.scores.cpu().numpy()[:, np.newaxis]
+        masks = pre.pred_instances.masks.cpu().numpy()
+        labels = pre.pred_instances.labels.cpu().numpy()[:, np.newaxis]
+        predicts = np.concatenate((scores, bboxes, labels), axis=1)
+        bboxes, indics, labels = nms(predicts, 0.8, 0.9)
+        masks = masks[indics]
+
+        obj_index = self.get_index(classes, label)
+        num_obj = self.find_num_count_np(labels, obj_index)
+        # exists = (labels == obj_index).any()
+
+        return num_obj
 
     ### 执行指定物体抓取
     def obj_grasp(self, label, vis=False):
