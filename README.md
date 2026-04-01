@@ -85,6 +85,59 @@ python RoboticGripper.py
 python camera.py
 ```
 
+### PyQt5 可视化界面
+
+项目现在提供一个基于 PyQt5 的抓取控制界面：`grasp_gui_v2.py`。
+
+界面功能包括：
+- 实时视频流显示（中心红点瞄准）
+- 目标物体下拉选择
+- 初始化、开始抓取、紧急停止按钮
+- 日志输出区（重定向 `print`）
+- 当前速度与目标名称状态区
+
+#### 安装 GUI 依赖
+
+```bash
+pip install -r requirements.txt
+```
+
+如果只想单独安装 GUI 相关依赖：
+
+```bash
+pip install PyQt5 pytest-qt
+```
+
+#### 启动 GUI（Mock 模式）
+
+Mock 模式不会连接真实机械臂和相机，适合开发、调试和测试。
+
+```bash
+python grasp_gui_v2.py --mock
+```
+
+#### 启动 GUI（真实硬件模式）
+
+真实模式会在运行时导入 `Grasp` 并连接硬件：
+
+```bash
+python grasp_gui_v2.py
+```
+
+> 注意：真实模式要求 RealSense、机械臂 SDK、模型权重和网络连接都已正确配置。
+
+#### 运行 GUI 测试
+
+```bash
+pytest tests/gui/ -v
+```
+
+如果在无显示环境中运行，可使用：
+
+```bash
+QT_QPA_PLATFORM=offscreen pytest tests/gui/ -v
+```
+
 ### 系统服务
 
 ```bash

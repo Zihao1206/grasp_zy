@@ -1,0 +1,39 @@
+{
+  "active_plan": "/home/zh/zh/grasp_zy_py310/.sisyphus/plans/grasp-gui.md",
+  "started_at": "2026-03-26T06:50:18.579Z",
+  "session_ids": [
+    "ses_2d74289c1ffevJGV2sEqnamvhM",
+    "ses_2d71355a5ffeQaiaX3sAP0HKRO",
+    "ses_2d70ac3e3ffejiBkGiGFXhiJAD",
+    "ses_2d7095e47ffe0U5xVsy53odOqo",
+    "ses_2d70bb865ffeeFxGGxvT9UQwIc",
+    "ses_2d70c2a25ffe9uLUiMXznVmUH9",
+    "ses_2d7071482ffe1v0HthgTTmEXhe",
+    "ses_2d6ea286affeCg2sozLdI5mSnH",
+    "ses_2d6e6eb25ffeAAy0U6aKVQRq8k",
+    "ses_2d6ddc168ffeRW6peKfiAv9A1K",
+    "ses_2d6db26c6ffexbPn9Cy5n398He",
+    "ses_2d6d23b56ffeiwxrmL8Z1kufe3",
+    "ses_2d6d1ca67ffe3oFx2UQuEPfYNT",
+    "ses_2d6d25c20ffe2Atm4bp5dY1M7K",
+    "ses_2d6d198a1ffem0GXNXrOS0aeoH",
+    "ses_2d6d2063bffejjqdaxVxhP2llu",
+    "ses_2d6d1e4c0ffeMXBoGpltWoYhpV",
+    "ses_2d69cf1c5ffepjhz0F52RPyNAd",
+    "ses_2d69153eaffewtyaCyjpyfrfMq",
+    "ses_2d682d09cffel2XOCrQDVbDI5X"
+  ],
+  "plan_name": "grasp-gui",
+  "agent": "atlas",
+  "task_sessions": {
+    "todo:1": {
+      "task_key": "todo:1",
+      "task_label": "1",
+      "task_title": "更新依赖 + 测试框架",
+      "session_id": "ses_2d71355a5ffeQaiaX3sAP0HKRO",
+      "agent": "Sisyphus-Junior",
+      "category": "quick",
+      "updated_at": "2026-03-26T06:56:26.449Z"
+    }
+  }
+}
