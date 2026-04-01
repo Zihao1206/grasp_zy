@@ -35,3 +35,9 @@ python-dotenv>=0.19.0
 
 # GLM-4 API
 zhipuai>=2.0.0
+
+# GUI 框架
+PyQt5>=5.15.0
+
+# GUI 测试
+pytest-qt>=4.2.0
