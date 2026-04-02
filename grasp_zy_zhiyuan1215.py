@@ -271,6 +271,9 @@ class Grasp:
             [x1 + width / 4 * s, y1 + width / 4 * c],
         ]).astype(int)
 
+        self._last_grasp_rect = rect.tolist()
+        self._last_grasp_center = (int(column), int(row))
+
         point1 = np.array(self.camera.get_coordinate(rect[0][0], rect[0][1]))
         point2 = np.array(self.camera.get_coordinate(rect[1][0], rect[1][1]))
 
@@ -416,7 +419,7 @@ class Grasp:
         return num_obj
 
     ### 执行指定物体抓取
-    def obj_grasp(self, label, vis=False):
+    def obj_grasp(self, label, vis=False, vis_callback=None):
 
         self.gripper.gripper_position(0)
         depth_img, color_img = self.camera.get_img()
@@ -463,6 +466,18 @@ class Grasp:
         coordinate, ori, width_gripper, angle, z_compensate, slope_flag = self.grasp_img2real_yolo(
                         color_img_raw, depth_img_raw, best_grasp, np.pi/7, 0, vis=vis, color=(0, 255, 0), note='', collision_check=True
                     )
+        
+        self._vis_data = {
+            'bboxes': [list(b) for b in bboxes],
+            'labels': labels.tolist(),
+            'classes': list(classes),
+            'grasp_rect': getattr(self, '_last_grasp_rect', None),
+            'grasp_center': getattr(self, '_last_grasp_center', None),
+            'crop_offset': 80,
+            'target_label': label,
+        }
+        if vis_callback is not None:
+            vis_callback(self._vis_data)
         
         gesture = mat2euler(ori, axes='sxyz')
         pose = np.hstack((coordinate, gesture))

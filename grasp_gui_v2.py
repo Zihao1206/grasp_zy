@@ -47,7 +47,7 @@ class GraspLike(Protocol):
     @property
     def robot_speed(self) -> int: ...
 
-    def obj_grasp(self, label: str, vis: bool = False) -> bool: ...
+    def obj_grasp(self, label: str, vis: bool = False, vis_callback: Optional[Callable] = None) -> bool: ...
 
     def init_gripper(self) -> None: ...
 
@@ -231,6 +231,7 @@ class _CancellationToken:
 
 class GraspWorker(QObject):
     grasp_finished = pyqtSignal(bool)
+    grasp_vis_ready = pyqtSignal(object)
     error_occurred = pyqtSignal(str)
     finished = pyqtSignal()
 
@@ -257,7 +258,7 @@ class GraspWorker(QObject):
             else:
                 if self.grasp is None:
                     raise RuntimeError("Grasp backend is not configured")
-                result = self.grasp.obj_grasp(self.label, vis=False)
+                result = self.grasp.obj_grasp(self.label, vis=False, vis_callback=self.grasp_vis_ready.emit)
             if self._cancel_token is not None and self._cancel_token.is_cancelled:
                 self.grasp_finished.emit(False)
                 return
@@ -335,12 +336,24 @@ class VideoWidget(QLabel):
         super().__init__()
         self.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.setStyleSheet("background-color: #1a1a1a;")
+        self._overlay: Optional[dict] = None
+
+    def set_overlay(self, vis_data: object) -> None:
+        if vis_data is None:
+            return
+        self._overlay = vis_data
+        assert isinstance(self._overlay, dict)
+
+    def clear_overlay(self) -> None:
+        self._overlay = None
 
     def update_frame(self, depth: np.ndarray, color: Optional[np.ndarray]) -> None:
         if color is None or not isinstance(color, np.ndarray) or color.size == 0:
             return
         display = color.copy()
         cv2.circle(display, (320, 240), 5, (0, 0, 255), -1)
+        if self._overlay is not None:
+            self._draw_overlay(display)
         pixmap = cv2_to_qpixmap(display)
         if pixmap.isNull():
             return
@@ -352,6 +365,41 @@ class VideoWidget(QLabel):
                 Qt.TransformationMode.SmoothTransformation,
             )
         )
+
+    def _draw_overlay(self, display: np.ndarray) -> None:
+        data = self._overlay
+        offset_x = data.get('crop_offset', 0)
+        classes = data.get('classes', [])
+        target_label = data.get('target_label', '')
+
+        bboxes = data.get('bboxes', [])
+        det_labels = data.get('labels', [])
+        for i, bbox in enumerate(bboxes):
+            x1 = int(bbox[0] + offset_x)
+            y1 = int(bbox[1])
+            x2 = int(bbox[2] + offset_x)
+            y2 = int(bbox[3])
+            label_idx = int(det_labels[i]) if i < len(det_labels) else -1
+            class_name = classes[label_idx] if 0 <= label_idx < len(classes) else ''
+            is_target = class_name == target_label
+            color = (0, 255, 0) if is_target else (128, 128, 128)
+            thickness = 2 if is_target else 1
+            cv2.rectangle(display, (x1, y1), (x2, y2), color, thickness)
+            if class_name:
+                cv2.putText(display, class_name, (x1, y1 - 5),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
+
+        grasp_rect = data.get('grasp_rect')
+        if grasp_rect is not None:
+            pts = np.array([[p[0] + offset_x, p[1]] for p in grasp_rect], dtype=np.int32)
+            cv2.polylines(display, [pts], True, (0, 255, 255), 2)
+
+        center = data.get('grasp_center')
+        if center is not None:
+            cx = center[0] + offset_x
+            cy = center[1]
+            cv2.circle(display, (cx, cy), 5, (0, 0, 255), -1)
+            cv2.circle(display, (cx, cy), 8, (0, 255, 255), 2)
 
 
 class ControlPanel(QWidget):
@@ -525,6 +573,7 @@ class GraspGUI(QMainWindow):
         self.grasp_worker.moveToThread(self.grasp_thread)
         self.grasp_thread.started.connect(self.grasp_worker.run)
         self.grasp_worker.grasp_finished.connect(self._on_grasp_finished)
+        self.grasp_worker.grasp_vis_ready.connect(self._on_grasp_vis_ready)
         self.grasp_worker.error_occurred.connect(lambda msg: print(f"抓取错误: {msg}"))
         self.grasp_worker.finished.connect(self.grasp_thread.quit)
         self.grasp_thread.start()
@@ -536,11 +585,18 @@ class GraspGUI(QMainWindow):
         if was_cancelled:
             return
         print("抓取成功!" if success else "抓取失败!")
+        self.video_widget.clear_overlay()
         self.state_machine.force_state(GUIState.READY if success else GUIState.FAULT)
+
+    def _on_grasp_vis_ready(self, vis_data: object) -> None:
+        if self._closing:
+            return
+        self.video_widget.set_overlay(vis_data)
 
     def _on_stop(self) -> None:
         self.state_machine.force_state(GUIState.STOPPING)
         print("紧急停止!")
+        self.video_widget.clear_overlay()
 
         if self._grasp_cancel is not None:
             self._grasp_cancel.cancel()
