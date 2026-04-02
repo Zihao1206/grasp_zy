@@ -208,29 +208,109 @@ class VideoWorker(QObject):
         self._running = False
 
 
+class _CancellationToken:
+    def __init__(self) -> None:
+        self._cancelled = False
+        self._lock = QMutex()
+
+    def cancel(self) -> None:
+        self._lock.lock()
+        try:
+            self._cancelled = True
+        finally:
+            self._lock.unlock()
+
+    @property
+    def is_cancelled(self) -> bool:
+        self._lock.lock()
+        try:
+            return self._cancelled
+        finally:
+            self._lock.unlock()
+
+
 class GraspWorker(QObject):
     grasp_finished = pyqtSignal(bool)
     error_occurred = pyqtSignal(str)
     finished = pyqtSignal()
 
-    def __init__(self, grasp: Optional[GraspLike], label: str, mock: bool = False) -> None:
+    def __init__(
+        self,
+        grasp: Optional[GraspLike],
+        label: str,
+        mock: bool = False,
+        cancel_token: Optional[_CancellationToken] = None,
+    ) -> None:
         super().__init__()
         self.grasp = grasp
         self.label = label
         self.mock = mock
+        self._cancel_token = cancel_token
 
     def run(self) -> None:
         try:
+            if self._cancel_token is not None and self._cancel_token.is_cancelled:
+                self.grasp_finished.emit(False)
+                return
             if self.mock:
                 result = True
             else:
                 if self.grasp is None:
                     raise RuntimeError("Grasp backend is not configured")
                 result = self.grasp.obj_grasp(self.label, vis=False)
+            if self._cancel_token is not None and self._cancel_token.is_cancelled:
+                self.grasp_finished.emit(False)
+                return
             self.grasp_finished.emit(bool(result))
         except Exception as exc:
             self.error_occurred.emit(str(exc))
             self.grasp_finished.emit(False)
+        finally:
+            self.finished.emit()
+
+
+class InitWorker(QObject):
+    init_finished = pyqtSignal(bool)
+    error_occurred = pyqtSignal(str)
+    finished = pyqtSignal()
+
+    def __init__(self, grasp: Optional[GraspLike], mock: bool = False) -> None:
+        super().__init__()
+        self.grasp = grasp
+        self.mock = mock
+
+    def run(self) -> None:
+        try:
+            if not self.mock and self.grasp is not None:
+                self.grasp.init_gripper()
+            self.init_finished.emit(True)
+        except Exception as exc:
+            self.error_occurred.emit(str(exc))
+            self.init_finished.emit(False)
+        finally:
+            self.finished.emit()
+
+
+class StopWorker(QObject):
+    stop_finished = pyqtSignal(bool)
+    error_occurred = pyqtSignal(str)
+    finished = pyqtSignal()
+
+    def __init__(self, grasp: Optional[GraspLike], mock: bool = False) -> None:
+        super().__init__()
+        self.grasp = grasp
+        self.mock = mock
+
+    def run(self) -> None:
+        try:
+            if self.grasp is not None:
+                stop_fn = getattr(self.grasp.robot, "rm_set_arm_stop", None)
+                if callable(stop_fn):
+                    stop_fn()
+            self.stop_finished.emit(True)
+        except Exception as exc:
+            self.error_occurred.emit(str(exc))
+            self.stop_finished.emit(False)
         finally:
             self.finished.emit()
 
@@ -332,7 +412,11 @@ class GraspGUI(QMainWindow):
         self.video_worker: Optional[VideoWorker] = None
         self.grasp_thread: Optional[QThread] = None
         self.grasp_worker: Optional[GraspWorker] = None
-        self._stop_requested = False
+        self.init_thread: Optional[QThread] = None
+        self.init_worker: Optional[InitWorker] = None
+        self.stop_thread: Optional[QThread] = None
+        self.stop_worker: Optional[StopWorker] = None
+        self._grasp_cancel: Optional[_CancellationToken] = None
         self._closing = False
 
         self._original_stdout = sys.stdout
@@ -407,13 +491,24 @@ class GraspGUI(QMainWindow):
             return
         self.state_machine.force_state(GUIState.INITIALIZING)
         print("初始化...")
-        try:
-            if self.grasp is not None:
-                self.grasp.init_gripper()
+
+        self.init_thread = QThread(self)
+        self.init_worker = InitWorker(self.grasp, mock=self.mock)
+        self.init_worker.moveToThread(self.init_thread)
+        self.init_thread.started.connect(self.init_worker.run)
+        self.init_worker.init_finished.connect(self._on_init_finished)
+        self.init_worker.error_occurred.connect(lambda msg: print(f"初始化错误: {msg}"))
+        self.init_worker.finished.connect(self.init_thread.quit)
+        self.init_thread.start()
+
+    def _on_init_finished(self, success: bool) -> None:
+        if self._closing:
+            return
+        if success:
             print("初始化完成")
             self.state_machine.force_state(GUIState.READY)
-        except Exception as exc:
-            print(f"初始化失败: {exc}")
+        else:
+            print("初始化失败")
             self.state_machine.force_state(GUIState.FAULT)
 
     def _on_start_grasp(self) -> None:
@@ -421,12 +516,12 @@ class GraspGUI(QMainWindow):
             print("当前状态不允许开始抓取")
             return
         label = self.control_panel.combo_objects.currentText()
-        self._stop_requested = False
+        self._grasp_cancel = _CancellationToken()
         self.state_machine.force_state(GUIState.GRASPING)
         print(f"开始抓取: {label}")
 
         self.grasp_thread = QThread(self)
-        self.grasp_worker = GraspWorker(self.grasp, label, mock=self.mock)
+        self.grasp_worker = GraspWorker(self.grasp, label, mock=self.mock, cancel_token=self._grasp_cancel)
         self.grasp_worker.moveToThread(self.grasp_thread)
         self.grasp_thread.started.connect(self.grasp_worker.run)
         self.grasp_worker.grasp_finished.connect(self._on_grasp_finished)
@@ -435,23 +530,35 @@ class GraspGUI(QMainWindow):
         self.grasp_thread.start()
 
     def _on_grasp_finished(self, success: bool) -> None:
-        if self._closing or self._stop_requested or self.state_machine.current_state == GUIState.STOPPING:
+        if self._closing:
+            return
+        was_cancelled = self._grasp_cancel is not None and self._grasp_cancel.is_cancelled
+        if was_cancelled:
             return
         print("抓取成功!" if success else "抓取失败!")
         self.state_machine.force_state(GUIState.READY if success else GUIState.FAULT)
 
     def _on_stop(self) -> None:
-        self._stop_requested = True
         self.state_machine.force_state(GUIState.STOPPING)
         print("紧急停止!")
-        try:
-            if self.grasp is not None:
-                with _hardware_guard(self.hw_lock):
-                    self.grasp.robot.rm_set_arm_stop()
-            self.state_machine.force_state(GUIState.IDLE)
-        except Exception as exc:
-            print(f"停止失败: {exc}")
-            self.state_machine.force_state(GUIState.FAULT)
+
+        if self._grasp_cancel is not None:
+            self._grasp_cancel.cancel()
+
+        self.stop_thread = QThread(self)
+        self.stop_worker = StopWorker(self.grasp, mock=self.mock)
+        self.stop_worker.moveToThread(self.stop_thread)
+        self.stop_thread.started.connect(self.stop_worker.run)
+        self.stop_worker.stop_finished.connect(self._on_stop_finished)
+        self.stop_worker.error_occurred.connect(lambda msg: print(f"停止错误: {msg}"))
+        self.stop_worker.finished.connect(self.stop_thread.quit)
+        self.stop_thread.start()
+
+    def _on_stop_finished(self, success: bool) -> None:
+        if self._closing:
+            return
+        self._grasp_cancel = None
+        self.state_machine.force_state(GUIState.IDLE if success else GUIState.FAULT)
 
     def _on_object_changed(self, object_name: str) -> None:
         speed = getattr(self.grasp, "robot_speed", 30)
@@ -459,28 +566,41 @@ class GraspGUI(QMainWindow):
 
     def closeEvent(self, a0) -> None:  # noqa: N802
         self._closing = True
-        self._stop_requested = True
+
+        if self._grasp_cancel is not None:
+            self._grasp_cancel.cancel()
+
         self.state_machine.force_state(GUIState.CLOSING)
+
         if self.video_worker is not None:
             self.video_worker.stop()
+        if self.grasp_thread is not None:
+            self.grasp_thread.quit()
+            self.grasp_thread.wait(3000)
+        if self.stop_thread is not None:
+            self.stop_thread.quit()
+            self.stop_thread.wait(3000)
+        if self.init_thread is not None:
+            self.init_thread.quit()
+            self.init_thread.wait(3000)
+
         if self.grasp is not None:
             stop_robot = getattr(self.grasp.robot, "rm_set_arm_stop", None)
             if callable(stop_robot):
                 try:
-                    with _hardware_guard(self.hw_lock):
-                        stop_robot()
+                    stop_robot()
                 except Exception:
                     pass
-        if self.grasp is not None:
             stop_camera = getattr(self.grasp.camera, "stop", None)
             if callable(stop_camera):
-                stop_camera()
+                try:
+                    stop_camera()
+                except Exception:
+                    pass
+
         if self.video_thread is not None:
             self.video_thread.quit()
             self.video_thread.wait(2000)
-        if self.grasp_thread is not None:
-            self.grasp_thread.quit()
-            self.grasp_thread.wait(2000)
 
         sys.stdout = self._original_stdout
         super().closeEvent(a0)
@@ -527,6 +647,9 @@ __all__ = [
     "LogBridge",
     "VideoWorker",
     "GraspWorker",
+    "InitWorker",
+    "StopWorker",
+    "_CancellationToken",
     "cv2_to_qpixmap",
     "VideoWidget",
     "ControlPanel",

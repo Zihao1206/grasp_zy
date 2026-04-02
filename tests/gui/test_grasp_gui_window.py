@@ -4,7 +4,7 @@ import time
 import pytest
 from PyQt5.QtWidgets import QApplication
 
-from grasp_gui_v2 import GUIState, GraspGUI
+from grasp_gui_v2 import GUIState, GraspGUI, _CancellationToken
 from tests.gui.mocks import MockGrasp
 
 
@@ -87,7 +87,7 @@ def test_init_click_transitions_to_ready_in_mock_backend(app):
     gui.state_machine.on_state_change(lambda old, new: transitions.append((old, new)))
     try:
         gui.control_panel.btn_init.click()
-        QApplication.processEvents()
+        _wait_until(lambda: gui.state_machine.current_state == GUIState.READY)
         assert (GUIState.IDLE, GUIState.INITIALIZING) in transitions
         assert gui.state_machine.current_state == GUIState.READY
         _assert_controls_follow_state(gui)
@@ -113,8 +113,7 @@ def test_start_grasp_mock_success_returns_to_ready(app):
     gui.state_machine.on_state_change(lambda old, new: transitions.append((old, new)))
     try:
         gui.control_panel.btn_init.click()
-        QApplication.processEvents()
-        assert gui.state_machine.current_state == GUIState.READY
+        _wait_until(lambda: gui.state_machine.current_state == GUIState.READY)
         gui.control_panel.btn_start.click()
         assert gui.state_machine.current_state == GUIState.GRASPING
         _wait_until(lambda: gui.state_machine.current_state == GUIState.READY)
@@ -139,7 +138,8 @@ def test_emergency_stop_calls_robot_stop_and_transitions_consistently(app):
         gui.state_machine.force_state(GUIState.READY)
         gui._sync_controls_to_state()
         gui.control_panel.btn_stop.click()
-        QApplication.processEvents()
+        _wait_until(lambda: len(stop_calls) > 0)
+        _wait_until(lambda: gui.state_machine.current_state in {GUIState.IDLE, GUIState.FAULT})
         assert stop_calls == [True]
         assert gui.state_machine.current_state in {GUIState.IDLE, GUIState.FAULT}
         _assert_controls_follow_state(gui)
@@ -151,7 +151,8 @@ def test_late_grasp_completion_does_not_override_stop_state(app):
     gui = GraspGUI(grasp=MockGrasp(hardware=False), mock=True)
     try:
         gui.state_machine.force_state(GUIState.GRASPING)
-        gui._stop_requested = True
+        gui._grasp_cancel = _CancellationToken()
+        gui._grasp_cancel.cancel()
         gui._on_grasp_finished(True)
         assert gui.state_machine.current_state == GUIState.GRASPING
     finally:

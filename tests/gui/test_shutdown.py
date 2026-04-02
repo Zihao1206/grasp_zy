@@ -5,7 +5,7 @@ import pytest
 from PyQt5.QtWidgets import QApplication
 
 import grasp_gui_v2
-from grasp_gui_v2 import GraspGUI, main
+from grasp_gui_v2 import GUIState, GraspGUI, main
 from tests.gui.mocks import MockGrasp
 
 
@@ -35,6 +35,8 @@ def test_close_event_restores_stdout_and_cleans_threads(app):
     gui.start_video()
     QApplication.processEvents()
 
+    gui.state_machine.force_state(GUIState.READY)
+    gui._sync_controls_to_state()
     gui.control_panel.btn_start.click()
     QApplication.processEvents()
 
