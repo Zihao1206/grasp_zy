@@ -30,9 +30,6 @@ from transforms3d.euler import mat2euler
 class CollisionDetected(Exception):
     """Raised when the robot reports a collision event during motion."""
 
-class _GraspCancelled(Exception):
-    """Raised when the user cancels a grasp execution."""
-
 class Grasp:
     def __init__(self, hardware=False):
         # self.robot_speed = config.robot_speed 
@@ -421,7 +418,9 @@ class Grasp:
 
         return num_obj
 
-    def plan_grasp(self, label, vis_callback=None):
+    ### 执行指定物体抓取
+    def obj_grasp(self, label, vis=False, vis_callback=None):
+
         self.gripper.gripper_position(0)
         depth_img, color_img = self.camera.get_img()
 
@@ -432,7 +431,7 @@ class Grasp:
         color_img_raw = color_img.copy()
         depth_img_raw = depth_img.copy()
 
-        pre = inference_detector(self.det_model, color_img)
+        pre = inference_detector(self.det_model, color_img) # numpy array BGR
 
         classes = self.det_model.dataset_meta['classes']
         bboxes = pre.pred_instances.bboxes.cpu().numpy()
@@ -443,21 +442,29 @@ class Grasp:
        
         bboxes, indics, labels = nms(predicts, 0.8, 0.9)
         masks = masks[indics]
+        
 
         color_image = color_img.astype(np.uint8)
+        
         black_image = np.zeros((color_image.shape[0], color_image.shape[1]), dtype=np.uint8)
+        # background_img = cv2.imread('zy/background.png')
         for j in range(len(bboxes)):
             mask_circle = np.uint8(masks[j])
+
             if classes[labels[j]] == label:
                 black_image[mask_circle > 0] = 255
+                # background_img[mask_circle > 0] = color_image[mask_circle > 0]
 
         color_img, depth_img, ratio, padw, padh = self.letterbox1(color_img, depth_img, 100)
+        # color_img, depth_img, ratio, padw, padh = self.letterbox1(background_img, depth_img, 100)
         img_in = self.to_tensor(depth_img, color_img, rgb_include=1, depth_include=1)
+        #img_in = self.to_tensor(depth_img, color_img, rgb_include=1, depth_include=0)
         k_max = 100
+        # topk_grasps, best_grasp = self.generate_grasp_yolo(img_in, color_img_raw, k_max, 0, blank_depth_img, pixel_wise_stride=1)
         topk_grasps, best_grasp = self.generate_grasp_yolo(img_in, color_img_raw, k_max, 0, black_image, pixel_wise_stride=1)
 
         coordinate, ori, width_gripper, angle, z_compensate, slope_flag = self.grasp_img2real_yolo(
-                        color_img_raw, depth_img_raw, best_grasp, np.pi/7, 0, vis=False, color=(0, 255, 0), note='', collision_check=True
+                        color_img_raw, depth_img_raw, best_grasp, np.pi/7, 0, vis=vis, color=(0, 255, 0), note='', collision_check=True
                     )
         
         self._vis_data = {
@@ -474,73 +481,53 @@ class Grasp:
         
         gesture = mat2euler(ori, axes='sxyz')
         pose = np.hstack((coordinate, gesture))
+        # angle = self.grasp_imgshow(
+        #         color_img_raw, best_grasp, 0, vis=vis, color=(0, 255, 0), note='', collision_check=True
+        # )
+        # if 0 <= angle <= np.pi/2:
+        #     angle = np.pi/2 - angle
+        # else:
+        #     angle = -np.pi/2 - angle
 
-        if slope_flag:
-            pose[2] = config.pose2_2
-            pose[0] += -0.02
-            if pose[2] > 0.534:
-                pose[2] = config.pose2_2
-            pose_up_to_grasp_position = pose + [0, 0, -0.08, 0, 0, 0]
-        else:
-            pose[2] = config.pose2
-            if pose[2] > 0.534:
-                pose[2] = config.pose2
-            pose_up_to_grasp_position = pose + [0, 0, -0.05, 0, 0, 0]
+        # mat = cv2.Rodrigues(np.array([0, 0, angle]).astype(np.float32))[0]
+        # Tobj2cam = np.vstack((
+        #                 np.hstack(
+        #                     (np.dot(self.Rbase2cam, np.array(mat)),
+        #                      np.expand_dims(coordinate, 0).T)
+        #                 ), np.array([[0, 0, 0, 1]])
+        #                 ))
 
-        self._grasp_plan = {
-            'pose': pose,
-            'pose_up_to_grasp_position': pose_up_to_grasp_position,
-        }
-        
-        print(pose)
-        return True
-
-    def execute_grasp(self, resume_event=None, cancel_event=None):
-        if self._grasp_plan is None:
-            print("没有可执行的抓取规划")
-            return False
-        
-        if not self.hardware:
-            return True
-        
-        plan = self._grasp_plan
-        pose = plan['pose']
-        pose_up_to_grasp_position = plan['pose_up_to_grasp_position']
-        
-        def _check():
-            if cancel_event and cancel_event.is_set():
-                raise _GraspCancelled("用户取消抓取")
-            if resume_event:
-                resume_event.wait()
-                if cancel_event and cancel_event.is_set():
-                    raise _GraspCancelled("用户取消抓取")
-        
-        try:
+        if self.hardware:
             self.robot.rm_movej(self.mid_pose, self.robot_speed, 0, 0, 1)
-            _check()
             self.robot.rm_movej(self.mid_pose1, self.robot_speed, 0, 0, 1)
-            _check()
-
-            print(f"计算抓取位姿逆解: {pose}")
-            params = rm_inverse_kinematics_params_t(self.mid_pose1, pose, 1)
-            tag1, pose_joint = self.robot.rm_algo_inverse_kinematics(params)
-            if tag1 != 0:
-                print("✗ 机械臂逆解失败！请重新放置物体位置")
-                self.robot.rm_movej(self.init_pose, self.robot_speed, 0, 0, 1)
-                return False
-            
-            print(f"✓ 逆解成功: {pose_joint}")
-            
-            print(f"计算上方安全位置逆解: {pose_up_to_grasp_position}")
-            params_up = rm_inverse_kinematics_params_t(self.mid_pose1, pose_up_to_grasp_position, 1)
-            tag2, up_to_grasp_joint = self.robot.rm_algo_inverse_kinematics(params_up)
-            if tag2 != 0:
-                print("✗ 上方位置逆解失败！请重新放置物体位置")
-                self.robot.rm_movej(self.init_pose, self.robot_speed, 0, 0, 1)
-                return False
-            
-            print(f"✓ 上方位置逆解成功: {up_to_grasp_joint}")
-            
+            # Tobj2base = self.Tcam2base.dot(Tobj2cam)
+            # position = Tobj2base[0:3, 3]
+            # gesture = cv2.Rodrigues(Tobj2base[0:3, 0:3])[0].T.squeeze()
+            # pose = np.hstack((position, gesture))
+            # print(pose)
+            if slope_flag:
+                pose[2] = config.pose2_2
+                # pose[1] += -0.02
+                pose[0] += -0.02
+                # pose = pose + [0, 0, -z_compensate-0.02, 0, 0, 0]
+                # pose = pose + [0, 0, -z_compensate, 0, 0, 0]
+                if pose[2] > 0.534:
+                    pose[2] = config.pose2_2
+                    # pose[2] = 0.553
+                pose_up_to_grasp_position = pose + [0, 0, -0.08, 0, 0, 0]
+                # [0, 0, -0.12, 0, 0, 0]
+            else:
+                # pose = pose + [0, 0, -0.197, 0, 0, 0]
+                # pose = pose + [0, 0, -0.170, 0, 0, 0]
+                # pose = pose + [0, 0, -0.170, 0, 0, 0]
+                pose[2] = config.pose2
+                if pose[2] > 0.534:
+                    pose[2] = config.pose2
+                pose_up_to_grasp_position = pose + [0, 0, -0.05, 0, 0, 0]
+            # if pose[2] > 0.535:
+            #     pose[2] = 0.532
+            print(pose)
+            # pose_up_to_grasp_position = pose + [0, 0, -0.12, 0, 0, 0]
             max_attempt = 2
             attempt = 0
             print(f"开始抓取尝试，最大尝试次数: {max_attempt}")
@@ -549,54 +536,80 @@ class Grasp:
                 try:
                     print(f"\n--- 第 {attempt + 1} 次抓取尝试 ---")
                     
+                    # 计算逆解
+                    print(f"计算抓取位姿逆解: {pose}")
+                    params = rm_inverse_kinematics_params_t(self.mid_pose1, pose, 1)
+                    tag1, pose_joint = self.robot.rm_algo_inverse_kinematics(params)
+                    if tag1 != 0:
+                        print(f"✗ 机械臂逆解失败！请重新放置物体位置")
+                        self.robot.rm_movej(self.init_pose, self.robot_speed, 0, 0, 1)
+                        return False
+                    
+                    print(f"✓ 逆解成功: {pose_joint}")
+                    
+                    # 计算上方安全位置逆解
+                    print(f"计算上方安全位置逆解: {pose_up_to_grasp_position}")
+                    params_up = rm_inverse_kinematics_params_t(self.mid_pose1, pose_up_to_grasp_position, 1)
+                    tag2, up_to_grasp_joint = self.robot.rm_algo_inverse_kinematics(params_up)
+                    if tag2 != 0:
+                        print(f"✗ 上方位置逆解失败！请重新放置物体位置")
+                        self.robot.rm_movej(self.init_pose, self.robot_speed, 0, 0, 1)
+                        return False
+                    
+                    print(f"✓ 上方位置逆解成功: {up_to_grasp_joint}")
+                    
+                    # 移动到上方安全位置
                     print("移动到上方安全位置...")
                     self._movej_safe(up_to_grasp_joint[0:6], self.robot_speed)
-                    _check()
                     
+                    # 打开夹爪
                     print("打开夹爪...")
                     self.gripper.gripper_position(1)
+                    # self.robot.rm_set_collision_state(8)
                     time.sleep(1)
                     
+                    # 移动到抓取位置
                     print("移动到抓取位置...")
                     self._movej_safe(pose_joint[0:6], self.robot_speed)
-                    _check()
                     
+                    # 闭合夹爪抓取
                     print("闭合夹爪抓取...")
                     self.gripper.gripper_position(0)
                     time.sleep(1)
                     
+                    # 返回上方安全位置
                     print("返回上方安全位置...")
                     self._movej_safe(up_to_grasp_joint[0:6], self.robot_speed)
-                    _check()
                     
+                    # 返回中间位置
                     print("返回中间位置...")
                     self._movej_safe(self.mid_pose1, self.robot_speed)
-                    _check()
                     
+                    # 返回初始位置
                     print("返回初始位置...")
                     self._movej_safe(self.lift2init_pose, self.robot_speed)
-                    _check()
 
+                    # self.robot.rm_set_collision_state(4)
+
+                    # 移动到放置位置
                     print("移动到放置位置...")
                     self._movej_safe(self.place_mid_pose, self.robot_speed)
-                    _check()
                     self._movej_safe(self.place_mid_pose2, self.robot_speed)
-                    _check()
                     self._movej_safe(self.place_last_pose, self.robot_speed)
-                    _check()
                     
+                    # 打开夹爪放置
                     print("打开夹爪放置...")
                     self.gripper.gripper_position(1)
                     time.sleep(1.0)
                     
+                    # 闭合夹爪
                     print("闭合夹爪...")
                     self.gripper.gripper_position(0)
                     
+                    # 返回初始位置
                     print("返回初始位置...")
                     self._movej_safe(self.place_mid_pose2, self.robot_speed)
-                    _check()
                     self._movej_safe(self.place_mid_pose, self.robot_speed)
-                    _check()
                     self._movej_safe(self.init_pose, self.robot_speed)
                     
                     print("✓ 抓取成功完成！")
@@ -616,15 +629,6 @@ class Grasp:
                     print("执行紧急恢复...")
                     self._recover_from_collision()
                     return False
-
-        except _GraspCancelled:
-            print("抓取已取消")
-            return False
-
-    def obj_grasp(self, label, vis=False, vis_callback=None):
-        if not self.plan_grasp(label, vis_callback=vis_callback):
-            return False
-        return self.execute_grasp()
 
     
 if __name__ == '__main__':

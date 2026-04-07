@@ -146,19 +146,20 @@ class TestGraspWorkerCancellation:
 
 
 class TestGUIInitStopIntegration:
-    def test_stop_cancels_active_grasp(self, app):
+    def test_stop_sets_cancel_event(self, app):
+        import threading
         gui = GraspGUI(grasp=MockGrasp(hardware=False), mock=True)
         try:
             gui.control_panel.btn_init.click()
             _wait_until(lambda: gui.state_machine.current_state == GUIState.READY)
-
-            gui.control_panel.btn_start.click()
-            assert gui.state_machine.current_state == GUIState.GRASPING
-            assert gui._grasp_cancel is not None
-            assert not gui._grasp_cancel.is_cancelled
-
+            gui.control_panel.btn_pre_grasp.click()
+            _wait_until(lambda: gui.state_machine.current_state == GUIState.PREVIEW)
+            gui.control_panel.btn_confirm.click()
+            _wait_until(lambda: gui.state_machine.current_state == GUIState.GRASPING)
+            assert gui._cancel_event is not None
+            assert not gui._cancel_event.is_set()
             gui.control_panel.btn_stop.click()
-            assert gui._grasp_cancel.is_cancelled
+            assert gui._cancel_event.is_set()
             _wait_until(lambda: gui.state_machine.current_state == GUIState.IDLE)
         finally:
             gui.close()

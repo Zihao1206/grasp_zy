@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import io
 import sys
+import threading
 import time
 from dataclasses import dataclass
 from datetime import datetime
@@ -47,6 +48,10 @@ class GraspLike(Protocol):
     @property
     def robot_speed(self) -> int: ...
 
+    def plan_grasp(self, label: str, vis_callback: Optional[Callable] = None) -> bool: ...
+
+    def execute_grasp(self, resume_event: object = None, cancel_event: object = None) -> bool: ...
+
     def obj_grasp(self, label: str, vis: bool = False, vis_callback: Optional[Callable] = None) -> bool: ...
 
     def init_gripper(self) -> None: ...
@@ -57,7 +62,9 @@ class GUIState(Enum):
     IDLE = auto()
     INITIALIZING = auto()
     READY = auto()
+    PREVIEW = auto()
     GRASPING = auto()
+    PAUSED = auto()
     STOPPING = auto()
     FAULT = auto()
     CLOSING = auto()
@@ -71,22 +78,26 @@ class ButtonState:
 
 class StateMachine:
     _BUTTON_RULES: Dict[GUIState, Dict[str, bool]] = {
-        GUIState.STARTUP: {"init": False, "start_grasp": False, "stop": False, "object_select": False},
-        GUIState.IDLE: {"init": True, "start_grasp": False, "stop": False, "object_select": True},
-        GUIState.INITIALIZING: {"init": False, "start_grasp": False, "stop": False, "object_select": False},
-        GUIState.READY: {"init": True, "start_grasp": True, "stop": True, "object_select": True},
-        GUIState.GRASPING: {"init": False, "start_grasp": False, "stop": True, "object_select": False},
-        GUIState.STOPPING: {"init": False, "start_grasp": False, "stop": False, "object_select": False},
-        GUIState.FAULT: {"init": True, "start_grasp": False, "stop": False, "object_select": False},
-        GUIState.CLOSING: {"init": False, "start_grasp": False, "stop": False, "object_select": False},
+        GUIState.STARTUP: {"init": False, "pre_grasp": False, "confirm": False, "replan": False, "cancel_preview": False, "pause": False, "resume": False, "stop": False, "object_select": False},
+        GUIState.IDLE: {"init": True, "pre_grasp": False, "confirm": False, "replan": False, "cancel_preview": False, "pause": False, "resume": False, "stop": False, "object_select": True},
+        GUIState.INITIALIZING: {"init": False, "pre_grasp": False, "confirm": False, "replan": False, "cancel_preview": False, "pause": False, "resume": False, "stop": False, "object_select": False},
+        GUIState.READY: {"init": True, "pre_grasp": True, "confirm": False, "replan": False, "cancel_preview": False, "pause": False, "resume": False, "stop": False, "object_select": True},
+        GUIState.PREVIEW: {"init": False, "pre_grasp": False, "confirm": True, "replan": True, "cancel_preview": True, "pause": False, "resume": False, "stop": False, "object_select": False},
+        GUIState.GRASPING: {"init": False, "pre_grasp": False, "confirm": False, "replan": False, "cancel_preview": False, "pause": True, "resume": False, "stop": True, "object_select": False},
+        GUIState.PAUSED: {"init": False, "pre_grasp": False, "confirm": False, "replan": False, "cancel_preview": False, "pause": False, "resume": True, "stop": True, "object_select": False},
+        GUIState.STOPPING: {"init": False, "pre_grasp": False, "confirm": False, "replan": False, "cancel_preview": False, "pause": False, "resume": False, "stop": False, "object_select": False},
+        GUIState.FAULT: {"init": True, "pre_grasp": False, "confirm": False, "replan": False, "cancel_preview": False, "pause": False, "resume": False, "stop": False, "object_select": False},
+        GUIState.CLOSING: {"init": False, "pre_grasp": False, "confirm": False, "replan": False, "cancel_preview": False, "pause": False, "resume": False, "stop": False, "object_select": False},
     }
 
     _TRANSITIONS = {
         GUIState.STARTUP: {GUIState.IDLE, GUIState.FAULT, GUIState.CLOSING},
         GUIState.IDLE: {GUIState.INITIALIZING, GUIState.READY, GUIState.FAULT, GUIState.CLOSING},
         GUIState.INITIALIZING: {GUIState.READY, GUIState.FAULT, GUIState.STOPPING, GUIState.CLOSING},
-        GUIState.READY: {GUIState.GRASPING, GUIState.STOPPING, GUIState.FAULT, GUIState.CLOSING, GUIState.IDLE},
-        GUIState.GRASPING: {GUIState.STOPPING, GUIState.READY, GUIState.FAULT, GUIState.CLOSING},
+        GUIState.READY: {GUIState.PREVIEW, GUIState.STOPPING, GUIState.FAULT, GUIState.CLOSING, GUIState.IDLE},
+        GUIState.PREVIEW: {GUIState.GRASPING, GUIState.PREVIEW, GUIState.READY, GUIState.STOPPING, GUIState.FAULT, GUIState.CLOSING},
+        GUIState.GRASPING: {GUIState.PAUSED, GUIState.STOPPING, GUIState.READY, GUIState.FAULT, GUIState.CLOSING},
+        GUIState.PAUSED: {GUIState.GRASPING, GUIState.STOPPING, GUIState.FAULT, GUIState.CLOSING},
         GUIState.STOPPING: {GUIState.IDLE, GUIState.READY, GUIState.FAULT, GUIState.CLOSING},
         GUIState.FAULT: {GUIState.INITIALIZING, GUIState.IDLE, GUIState.CLOSING},
         GUIState.CLOSING: set(),
@@ -187,7 +198,7 @@ class VideoWorker(QObject):
         if mock:
             from tests.gui.mocks import MockCamera
 
-            self.camera = MockCamera()
+            self.camera: Optional[CameraLike] = MockCamera()
         else:
             self.camera = camera
 
@@ -270,6 +281,87 @@ class GraspWorker(QObject):
             self.finished.emit()
 
 
+class PlanWorker(QObject):
+    plan_ready = pyqtSignal(bool)
+    plan_vis_ready = pyqtSignal(object)
+    error_occurred = pyqtSignal(str)
+    finished = pyqtSignal()
+
+    def __init__(self, grasp: Optional[GraspLike], label: str, mock: bool = False) -> None:
+        super().__init__()
+        self.grasp = grasp
+        self.label = label
+        self.mock = mock
+
+    def run(self) -> None:
+        try:
+            if self.mock:
+                self.plan_vis_ready.emit({
+                    'bboxes': [[100, 100, 200, 200]],
+                    'labels': [0],
+                    'classes': OBJECT_LABELS,
+                    'grasp_rect': [[100, 100], [200, 100], [200, 200], [100, 200]],
+                    'grasp_center': (150, 150),
+                    'crop_offset': 80,
+                    'target_label': self.label,
+                })
+                result = True
+            else:
+                if self.grasp is None:
+                    raise RuntimeError("Grasp backend is not configured")
+                result = self.grasp.plan_grasp(self.label, vis_callback=self.plan_vis_ready.emit)
+            self.plan_ready.emit(bool(result))
+        except Exception as exc:
+            self.error_occurred.emit(str(exc))
+            self.plan_ready.emit(False)
+        finally:
+            self.finished.emit()
+
+
+class ExecuteWorker(QObject):
+    execute_finished = pyqtSignal(bool)
+    error_occurred = pyqtSignal(str)
+    finished = pyqtSignal()
+
+    def __init__(
+        self,
+        grasp: Optional[GraspLike],
+        mock: bool = False,
+        resume_event: Optional[threading.Event] = None,
+        cancel_event: Optional[threading.Event] = None,
+    ) -> None:
+        super().__init__()
+        self.grasp = grasp
+        self.mock = mock
+        self._resume_event = resume_event
+        self._cancel_event = cancel_event
+
+    def run(self) -> None:
+        try:
+            if self._cancel_event is not None and self._cancel_event.is_set():
+                self.execute_finished.emit(False)
+                return
+            if self.mock:
+                time.sleep(0.5)
+                result = True
+            else:
+                if self.grasp is None:
+                    raise RuntimeError("Grasp backend is not configured")
+                result = self.grasp.execute_grasp(
+                    resume_event=self._resume_event,
+                    cancel_event=self._cancel_event,
+                )
+            if self._cancel_event is not None and self._cancel_event.is_set():
+                self.execute_finished.emit(False)
+                return
+            self.execute_finished.emit(bool(result))
+        except Exception as exc:
+            self.error_occurred.emit(str(exc))
+            self.execute_finished.emit(False)
+        finally:
+            self.finished.emit()
+
+
 class InitWorker(QObject):
     init_finished = pyqtSignal(bool)
     error_occurred = pyqtSignal(str)
@@ -342,7 +434,6 @@ class VideoWidget(QLabel):
         if vis_data is None:
             return
         self._overlay = vis_data
-        assert isinstance(self._overlay, dict)
 
     def clear_overlay(self) -> None:
         self._overlay = None
@@ -407,7 +498,12 @@ class ControlPanel(QWidget):
         super().__init__()
         layout = QVBoxLayout(self)
         self.btn_init = QPushButton("初始化")
-        self.btn_start = QPushButton("开始抓取")
+        self.btn_pre_grasp = QPushButton("预抓取")
+        self.btn_confirm = QPushButton("确认抓取")
+        self.btn_replan = QPushButton("重新预抓取")
+        self.btn_cancel_preview = QPushButton("取消")
+        self.btn_pause = QPushButton("暂停")
+        self.btn_resume = QPushButton("继续抓取")
         self.btn_stop = QPushButton("紧急停止")
         self.combo_objects = QComboBox()
         self.combo_objects.addItems(OBJECT_LABELS)
@@ -415,7 +511,12 @@ class ControlPanel(QWidget):
         layout.addWidget(self.btn_init)
         layout.addWidget(QLabel("物体选择:"))
         layout.addWidget(self.combo_objects)
-        layout.addWidget(self.btn_start)
+        layout.addWidget(self.btn_pre_grasp)
+        layout.addWidget(self.btn_confirm)
+        layout.addWidget(self.btn_replan)
+        layout.addWidget(self.btn_cancel_preview)
+        layout.addWidget(self.btn_pause)
+        layout.addWidget(self.btn_resume)
         layout.addWidget(self.btn_stop)
         layout.addStretch(1)
 
@@ -458,13 +559,16 @@ class GraspGUI(QMainWindow):
 
         self.video_thread: Optional[QThread] = None
         self.video_worker: Optional[VideoWorker] = None
-        self.grasp_thread: Optional[QThread] = None
-        self.grasp_worker: Optional[GraspWorker] = None
         self.init_thread: Optional[QThread] = None
         self.init_worker: Optional[InitWorker] = None
         self.stop_thread: Optional[QThread] = None
         self.stop_worker: Optional[StopWorker] = None
-        self._grasp_cancel: Optional[_CancellationToken] = None
+        self.plan_thread: Optional[QThread] = None
+        self.plan_worker: Optional[PlanWorker] = None
+        self.execute_thread: Optional[QThread] = None
+        self.execute_worker: Optional[ExecuteWorker] = None
+        self._resume_event: Optional[threading.Event] = None
+        self._cancel_event: Optional[threading.Event] = None
         self._closing = False
 
         self._original_stdout = sys.stdout
@@ -505,7 +609,12 @@ class GraspGUI(QMainWindow):
 
     def _setup_connections(self) -> None:
         self.control_panel.btn_init.clicked.connect(self._on_init)
-        self.control_panel.btn_start.clicked.connect(self._on_start_grasp)
+        self.control_panel.btn_pre_grasp.clicked.connect(self._on_pre_grasp)
+        self.control_panel.btn_confirm.clicked.connect(self._on_confirm_grasp)
+        self.control_panel.btn_replan.clicked.connect(self._on_replan)
+        self.control_panel.btn_cancel_preview.clicked.connect(self._on_cancel_preview)
+        self.control_panel.btn_pause.clicked.connect(self._on_pause)
+        self.control_panel.btn_resume.clicked.connect(self._on_resume)
         self.control_panel.btn_stop.clicked.connect(self._on_stop)
         self.control_panel.combo_objects.currentTextChanged.connect(self._on_object_changed)
         self.state_machine.on_state_change(lambda _old, _new: self._sync_controls_to_state())
@@ -513,7 +622,12 @@ class GraspGUI(QMainWindow):
     def _sync_controls_to_state(self) -> None:
         states = self.state_machine.get_button_states()
         self.control_panel.btn_init.setEnabled(states["init"])
-        self.control_panel.btn_start.setEnabled(states["start_grasp"])
+        self.control_panel.btn_pre_grasp.setEnabled(states["pre_grasp"])
+        self.control_panel.btn_confirm.setEnabled(states["confirm"])
+        self.control_panel.btn_replan.setEnabled(states["replan"])
+        self.control_panel.btn_cancel_preview.setEnabled(states["cancel_preview"])
+        self.control_panel.btn_pause.setEnabled(states["pause"])
+        self.control_panel.btn_resume.setEnabled(states["resume"])
         self.control_panel.btn_stop.setEnabled(states["stop"])
         self.control_panel.combo_objects.setEnabled(states["object_select"])
 
@@ -559,34 +673,103 @@ class GraspGUI(QMainWindow):
             print("初始化失败")
             self.state_machine.force_state(GUIState.FAULT)
 
-    def _on_start_grasp(self) -> None:
+    def _on_pre_grasp(self) -> None:
         if self.state_machine.current_state != GUIState.READY:
-            print("当前状态不允许开始抓取")
             return
         label = self.control_panel.combo_objects.currentText()
-        self._grasp_cancel = _CancellationToken()
-        self.state_machine.force_state(GUIState.GRASPING)
-        print(f"开始抓取: {label}")
+        self.state_machine.force_state(GUIState.PREVIEW)
+        print(f"预抓取: {label}")
 
-        self.grasp_thread = QThread(self)
-        self.grasp_worker = GraspWorker(self.grasp, label, mock=self.mock, cancel_token=self._grasp_cancel)
-        self.grasp_worker.moveToThread(self.grasp_thread)
-        self.grasp_thread.started.connect(self.grasp_worker.run)
-        self.grasp_worker.grasp_finished.connect(self._on_grasp_finished)
-        self.grasp_worker.grasp_vis_ready.connect(self._on_grasp_vis_ready)
-        self.grasp_worker.error_occurred.connect(lambda msg: print(f"抓取错误: {msg}"))
-        self.grasp_worker.finished.connect(self.grasp_thread.quit)
-        self.grasp_thread.start()
+        self.plan_thread = QThread(self)
+        self.plan_worker = PlanWorker(self.grasp, label, mock=self.mock)
+        self.plan_worker.moveToThread(self.plan_thread)
+        self.plan_thread.started.connect(self.plan_worker.run)
+        self.plan_worker.plan_ready.connect(self._on_plan_ready)
+        self.plan_worker.plan_vis_ready.connect(self._on_grasp_vis_ready)
+        self.plan_worker.error_occurred.connect(lambda msg: print(f"规划错误: {msg}"))
+        self.plan_worker.finished.connect(self.plan_thread.quit)
+        self.plan_thread.start()
 
-    def _on_grasp_finished(self, success: bool) -> None:
+    def _on_plan_ready(self, success: bool) -> None:
         if self._closing:
             return
-        was_cancelled = self._grasp_cancel is not None and self._grasp_cancel.is_cancelled
-        if was_cancelled:
+        if success:
+            print("预抓取规划完成，请确认或重新规划")
+        else:
+            print("预抓取规划失败")
+            self.video_widget.clear_overlay()
+            self.state_machine.force_state(GUIState.READY)
+
+    def _on_confirm_grasp(self) -> None:
+        if self.state_machine.current_state != GUIState.PREVIEW:
+            return
+        self._resume_event = threading.Event()
+        self._resume_event.set()
+        self._cancel_event = threading.Event()
+        self.state_machine.force_state(GUIState.GRASPING)
+        print("开始执行抓取...")
+
+        self.execute_thread = QThread(self)
+        self.execute_worker = ExecuteWorker(
+            self.grasp, mock=self.mock,
+            resume_event=self._resume_event,
+            cancel_event=self._cancel_event,
+        )
+        self.execute_worker.moveToThread(self.execute_thread)
+        self.execute_thread.started.connect(self.execute_worker.run)
+        self.execute_worker.execute_finished.connect(self._on_execute_finished)
+        self.execute_worker.error_occurred.connect(lambda msg: print(f"执行错误: {msg}"))
+        self.execute_worker.finished.connect(self.execute_thread.quit)
+        self.execute_thread.start()
+
+    def _on_execute_finished(self, success: bool) -> None:
+        if self._closing:
+            return
+        if self._cancel_event is not None and self._cancel_event.is_set():
             return
         print("抓取成功!" if success else "抓取失败!")
         self.video_widget.clear_overlay()
         self.state_machine.force_state(GUIState.READY if success else GUIState.FAULT)
+
+    def _on_replan(self) -> None:
+        if self.state_machine.current_state != GUIState.PREVIEW:
+            return
+        self.video_widget.clear_overlay()
+        label = self.control_panel.combo_objects.currentText()
+        print(f"重新预抓取: {label}")
+
+        self.plan_thread = QThread(self)
+        self.plan_worker = PlanWorker(self.grasp, label, mock=self.mock)
+        self.plan_worker.moveToThread(self.plan_thread)
+        self.plan_thread.started.connect(self.plan_worker.run)
+        self.plan_worker.plan_ready.connect(self._on_plan_ready)
+        self.plan_worker.plan_vis_ready.connect(self._on_grasp_vis_ready)
+        self.plan_worker.error_occurred.connect(lambda msg: print(f"规划错误: {msg}"))
+        self.plan_worker.finished.connect(self.plan_thread.quit)
+        self.plan_thread.start()
+
+    def _on_cancel_preview(self) -> None:
+        if self.state_machine.current_state != GUIState.PREVIEW:
+            return
+        self.video_widget.clear_overlay()
+        print("取消预抓取")
+        self.state_machine.force_state(GUIState.READY)
+
+    def _on_pause(self) -> None:
+        if self.state_machine.current_state != GUIState.GRASPING:
+            return
+        if self._resume_event is not None:
+            self._resume_event.clear()
+        self.state_machine.force_state(GUIState.PAUSED)
+        print("抓取已暂停")
+
+    def _on_resume(self) -> None:
+        if self.state_machine.current_state != GUIState.PAUSED:
+            return
+        if self._resume_event is not None:
+            self._resume_event.set()
+        self.state_machine.force_state(GUIState.GRASPING)
+        print("继续抓取...")
 
     def _on_grasp_vis_ready(self, vis_data: object) -> None:
         if self._closing:
@@ -598,8 +781,10 @@ class GraspGUI(QMainWindow):
         print("紧急停止!")
         self.video_widget.clear_overlay()
 
-        if self._grasp_cancel is not None:
-            self._grasp_cancel.cancel()
+        if self._resume_event is not None:
+            self._resume_event.set()
+        if self._cancel_event is not None:
+            self._cancel_event.set()
 
         self.stop_thread = QThread(self)
         self.stop_worker = StopWorker(self.grasp, mock=self.mock)
@@ -613,7 +798,8 @@ class GraspGUI(QMainWindow):
     def _on_stop_finished(self, success: bool) -> None:
         if self._closing:
             return
-        self._grasp_cancel = None
+        self._resume_event = None
+        self._cancel_event = None
         self.state_machine.force_state(GUIState.IDLE if success else GUIState.FAULT)
 
     def _on_object_changed(self, object_name: str) -> None:
@@ -623,22 +809,19 @@ class GraspGUI(QMainWindow):
     def closeEvent(self, a0) -> None:  # noqa: N802
         self._closing = True
 
-        if self._grasp_cancel is not None:
-            self._grasp_cancel.cancel()
+        if self._cancel_event is not None:
+            self._cancel_event.set()
+        if self._resume_event is not None:
+            self._resume_event.set()
 
         self.state_machine.force_state(GUIState.CLOSING)
 
         if self.video_worker is not None:
             self.video_worker.stop()
-        if self.grasp_thread is not None:
-            self.grasp_thread.quit()
-            self.grasp_thread.wait(3000)
-        if self.stop_thread is not None:
-            self.stop_thread.quit()
-            self.stop_thread.wait(3000)
-        if self.init_thread is not None:
-            self.init_thread.quit()
-            self.init_thread.wait(3000)
+        for thread in (self.execute_thread, self.plan_thread, self.stop_thread, self.init_thread):
+            if thread is not None:
+                thread.quit()
+                thread.wait(3000)
 
         if self.grasp is not None:
             stop_robot = getattr(self.grasp.robot, "rm_set_arm_stop", None)
@@ -703,6 +886,8 @@ __all__ = [
     "LogBridge",
     "VideoWorker",
     "GraspWorker",
+    "PlanWorker",
+    "ExecuteWorker",
     "InitWorker",
     "StopWorker",
     "_CancellationToken",

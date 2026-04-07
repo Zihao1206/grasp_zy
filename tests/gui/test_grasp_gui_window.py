@@ -4,7 +4,7 @@ import time
 import pytest
 from PyQt5.QtWidgets import QApplication
 
-from grasp_gui_v2 import GUIState, GraspGUI, _CancellationToken
+from grasp_gui_v2 import GUIState, GraspGUI
 from tests.gui.mocks import MockGrasp
 
 
@@ -29,7 +29,12 @@ def _wait_until(predicate, timeout=2.0):
 def _assert_controls_follow_state(gui: GraspGUI):
     expected = gui.state_machine.get_button_states()
     assert gui.control_panel.btn_init.isEnabled() == expected["init"]
-    assert gui.control_panel.btn_start.isEnabled() == expected["start_grasp"]
+    assert gui.control_panel.btn_pre_grasp.isEnabled() == expected["pre_grasp"]
+    assert gui.control_panel.btn_confirm.isEnabled() == expected["confirm"]
+    assert gui.control_panel.btn_replan.isEnabled() == expected["replan"]
+    assert gui.control_panel.btn_cancel_preview.isEnabled() == expected["cancel_preview"]
+    assert gui.control_panel.btn_pause.isEnabled() == expected["pause"]
+    assert gui.control_panel.btn_resume.isEnabled() == expected["resume"]
     assert gui.control_panel.btn_stop.isEnabled() == expected["stop"]
     assert gui.control_panel.combo_objects.isEnabled() == expected["object_select"]
 
@@ -95,29 +100,30 @@ def test_init_click_transitions_to_ready_in_mock_backend(app):
         gui.close()
 
 
-def test_start_button_disabled_until_ready(app):
+def test_pre_grasp_button_disabled_until_ready(app):
     gui = GraspGUI(grasp=MockGrasp(hardware=False), mock=True)
     try:
         assert gui.state_machine.current_state == GUIState.IDLE
-        assert gui.control_panel.btn_start.isEnabled() is False
-        gui.control_panel.btn_start.click()
+        assert gui.control_panel.btn_pre_grasp.isEnabled() is False
+        gui.control_panel.btn_pre_grasp.click()
         QApplication.processEvents()
         assert gui.state_machine.current_state == GUIState.IDLE
     finally:
         gui.close()
 
 
-def test_start_grasp_mock_success_returns_to_ready(app):
+def test_pre_grasp_then_confirm_returns_to_ready(app):
     gui = GraspGUI(grasp=MockGrasp(hardware=False), mock=True)
     transitions = []
     gui.state_machine.on_state_change(lambda old, new: transitions.append((old, new)))
     try:
         gui.control_panel.btn_init.click()
         _wait_until(lambda: gui.state_machine.current_state == GUIState.READY)
-        gui.control_panel.btn_start.click()
-        assert gui.state_machine.current_state == GUIState.GRASPING
+        gui.control_panel.btn_pre_grasp.click()
+        _wait_until(lambda: gui.state_machine.current_state == GUIState.PREVIEW)
+        assert (GUIState.READY, GUIState.PREVIEW) in transitions
+        gui.control_panel.btn_confirm.click()
         _wait_until(lambda: gui.state_machine.current_state == GUIState.READY)
-        assert (GUIState.READY, GUIState.GRASPING) in transitions
         assert any(new == GUIState.READY for _, new in transitions)
         _assert_controls_follow_state(gui)
     finally:
@@ -147,13 +153,20 @@ def test_emergency_stop_calls_robot_stop_and_transitions_consistently(app):
         gui.close()
 
 
-def test_late_grasp_completion_does_not_override_stop_state(app):
+def test_cancel_event_set_on_stop_during_execute(app):
+    import threading
     gui = GraspGUI(grasp=MockGrasp(hardware=False), mock=True)
     try:
-        gui.state_machine.force_state(GUIState.GRASPING)
-        gui._grasp_cancel = _CancellationToken()
-        gui._grasp_cancel.cancel()
-        gui._on_grasp_finished(True)
-        assert gui.state_machine.current_state == GUIState.GRASPING
+        gui.control_panel.btn_init.click()
+        _wait_until(lambda: gui.state_machine.current_state == GUIState.READY)
+        gui.control_panel.btn_pre_grasp.click()
+        _wait_until(lambda: gui.state_machine.current_state == GUIState.PREVIEW)
+        gui.control_panel.btn_confirm.click()
+        _wait_until(lambda: gui.state_machine.current_state == GUIState.GRASPING)
+        assert gui._cancel_event is not None
+        assert not gui._cancel_event.is_set()
+        gui.control_panel.btn_stop.click()
+        assert gui._cancel_event.is_set()
+        _wait_until(lambda: gui.state_machine.current_state == GUIState.IDLE)
     finally:
         gui.close()

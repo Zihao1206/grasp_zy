@@ -4,15 +4,19 @@ from grasp_gui_v2 import GUIState, StateMachine
 
 
 EXPECTED_RULES = {
-    GUIState.STARTUP: {"init": False, "start_grasp": False, "stop": False, "object_select": False},
-    GUIState.IDLE: {"init": True, "start_grasp": False, "stop": False, "object_select": True},
-    GUIState.INITIALIZING: {"init": False, "start_grasp": False, "stop": False, "object_select": False},
-    GUIState.READY: {"init": True, "start_grasp": True, "stop": True, "object_select": True},
-    GUIState.GRASPING: {"init": False, "start_grasp": False, "stop": True, "object_select": False},
-    GUIState.STOPPING: {"init": False, "start_grasp": False, "stop": False, "object_select": False},
-    GUIState.FAULT: {"init": True, "start_grasp": False, "stop": False, "object_select": False},
-    GUIState.CLOSING: {"init": False, "start_grasp": False, "stop": False, "object_select": False},
+    GUIState.STARTUP: {"init": False, "pre_grasp": False, "confirm": False, "replan": False, "cancel_preview": False, "pause": False, "resume": False, "stop": False, "object_select": False},
+    GUIState.IDLE: {"init": True, "pre_grasp": False, "confirm": False, "replan": False, "cancel_preview": False, "pause": False, "resume": False, "stop": False, "object_select": True},
+    GUIState.INITIALIZING: {"init": False, "pre_grasp": False, "confirm": False, "replan": False, "cancel_preview": False, "pause": False, "resume": False, "stop": False, "object_select": False},
+    GUIState.READY: {"init": True, "pre_grasp": True, "confirm": False, "replan": False, "cancel_preview": False, "pause": False, "resume": False, "stop": False, "object_select": True},
+    GUIState.PREVIEW: {"init": False, "pre_grasp": False, "confirm": True, "replan": True, "cancel_preview": True, "pause": False, "resume": False, "stop": False, "object_select": False},
+    GUIState.GRASPING: {"init": False, "pre_grasp": False, "confirm": False, "replan": False, "cancel_preview": False, "pause": True, "resume": False, "stop": True, "object_select": False},
+    GUIState.PAUSED: {"init": False, "pre_grasp": False, "confirm": False, "replan": False, "cancel_preview": False, "pause": False, "resume": True, "stop": True, "object_select": False},
+    GUIState.STOPPING: {"init": False, "pre_grasp": False, "confirm": False, "replan": False, "cancel_preview": False, "pause": False, "resume": False, "stop": False, "object_select": False},
+    GUIState.FAULT: {"init": True, "pre_grasp": False, "confirm": False, "replan": False, "cancel_preview": False, "pause": False, "resume": False, "stop": False, "object_select": False},
+    GUIState.CLOSING: {"init": False, "pre_grasp": False, "confirm": False, "replan": False, "cancel_preview": False, "pause": False, "resume": False, "stop": False, "object_select": False},
 }
+
+_EXPECTED_KEYS = {"init", "pre_grasp", "confirm", "replan", "cancel_preview", "pause", "resume", "stop", "object_select"}
 
 
 def test_state_enum_matches_required_workflow():
@@ -21,7 +25,9 @@ def test_state_enum_matches_required_workflow():
         "IDLE",
         "INITIALIZING",
         "READY",
+        "PREVIEW",
         "GRASPING",
+        "PAUSED",
         "STOPPING",
         "FAULT",
         "CLOSING",
@@ -32,7 +38,7 @@ def test_state_enum_matches_required_workflow():
 def test_button_state_rules_exact(state):
     machine = StateMachine(initial_state=state)
     button_states = machine.get_button_states()
-    assert set(button_states.keys()) == {"init", "start_grasp", "stop", "object_select"}
+    assert set(button_states.keys()) == _EXPECTED_KEYS
     assert button_states == EXPECTED_RULES[state]
 
 
