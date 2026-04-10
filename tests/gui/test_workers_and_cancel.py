@@ -176,8 +176,12 @@ class TestGUIInitStopIntegration:
     def test_stop_worker_thread_cleaned_up_after_completion(self, app):
         gui = GraspGUI(grasp=MockGrasp(hardware=False), mock=True)
         try:
-            gui.state_machine.force_state(GUIState.READY)
-            gui._sync_controls_to_state()
+            gui.control_panel.btn_init.click()
+            _wait_until(lambda: gui.state_machine.current_state == GUIState.READY)
+            gui.control_panel.btn_pre_grasp.click()
+            _wait_until(lambda: gui.state_machine.current_state == GUIState.PREVIEW)
+            gui.control_panel.btn_confirm.click()
+            _wait_until(lambda: gui.state_machine.current_state == GUIState.GRASPING)
             gui.control_panel.btn_stop.click()
             _wait_until(lambda: gui.state_machine.current_state == GUIState.IDLE)
             _wait_until(lambda: gui.stop_thread is not None and not gui.stop_thread.isRunning())

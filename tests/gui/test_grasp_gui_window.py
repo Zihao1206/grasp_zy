@@ -141,8 +141,12 @@ def test_emergency_stop_calls_robot_stop_and_transitions_consistently(app):
     grasp.robot.rm_set_arm_stop = _stop
     gui = GraspGUI(grasp=grasp, mock=True)
     try:
-        gui.state_machine.force_state(GUIState.READY)
-        gui._sync_controls_to_state()
+        gui.control_panel.btn_init.click()
+        _wait_until(lambda: gui.state_machine.current_state == GUIState.READY)
+        gui.control_panel.btn_pre_grasp.click()
+        _wait_until(lambda: gui.state_machine.current_state == GUIState.PREVIEW)
+        gui.control_panel.btn_confirm.click()
+        _wait_until(lambda: gui.state_machine.current_state == GUIState.GRASPING)
         gui.control_panel.btn_stop.click()
         _wait_until(lambda: len(stop_calls) > 0)
         _wait_until(lambda: gui.state_machine.current_state in {GUIState.IDLE, GUIState.FAULT})

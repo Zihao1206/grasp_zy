@@ -1,5 +1,6 @@
 import os
 import sys
+import time
 
 import pytest
 from PyQt5.QtWidgets import QApplication
@@ -10,6 +11,16 @@ from tests.gui.mocks import MockGrasp
 
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+
+
+def _wait_until(predicate, timeout=2.0):
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        QApplication.processEvents()
+        if predicate():
+            return
+        time.sleep(0.01)
+    raise AssertionError("condition not met before timeout")
 
 
 @pytest.fixture(scope="module")
@@ -35,10 +46,12 @@ def test_close_event_restores_stdout_and_cleans_threads(app):
     gui.start_video()
     QApplication.processEvents()
 
-    gui.state_machine.force_state(GUIState.READY)
-    gui._sync_controls_to_state()
-    gui.control_panel.btn_start.click()
-    QApplication.processEvents()
+    gui.control_panel.btn_init.click()
+    _wait_until(lambda: gui.state_machine.current_state == GUIState.READY)
+    gui.control_panel.btn_pre_grasp.click()
+    _wait_until(lambda: gui.state_machine.current_state == GUIState.PREVIEW)
+    gui.control_panel.btn_confirm.click()
+    _wait_until(lambda: gui.state_machine.current_state == GUIState.GRASPING)
 
     original_stdout = gui._original_stdout
     gui.close()
@@ -49,8 +62,8 @@ def test_close_event_restores_stdout_and_cleans_threads(app):
     assert robot_stop_calls == [True]
     if gui.video_thread is not None:
         assert not gui.video_thread.isRunning()
-    if gui.grasp_thread is not None:
-        assert not gui.grasp_thread.isRunning()
+    if gui.execute_thread is not None:
+        assert not gui.execute_thread.isRunning()
 
 
 def test_main_mock_path_avoids_hardware_import_and_non_blocking(monkeypatch, app):
