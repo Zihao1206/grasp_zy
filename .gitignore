@@ -92,6 +92,7 @@ robotic_arm_package/*.tar.bz2
 # Data files
 dataset/*.data
 dataset/*.txt
+data/*.txt
 **/dataset/tolerance
 *.npy
 *.npz

@@ -33,7 +33,9 @@ from PyQt5.QtWidgets import (
     QMainWindow,
     QPlainTextEdit,
     QPushButton,
+    QSizePolicy,
     QSpinBox,
+    QSplitter,
     QTextEdit,
     QVBoxLayout,
     QWidget,
@@ -288,7 +290,16 @@ class IntrinsicsWorker(QObject):
 
 
 class SaveDataWorker(QObject):
+    """Capture image + pose, save to disk, then run chessboard detection.
+
+    Emits ``preview_ready`` with a BGR ``np.ndarray`` rendered with detected
+    corners (or the raw frame if detection fails). Detection failure is
+    reported via ``log_message`` but does not abort the save flow.
+    """
+
     save_done = pyqtSignal(bool, int)
+    preview_ready = pyqtSignal(object, bool)  # rendered_image, detected_ok
+    log_message = pyqtSignal(str)
     error_occurred = pyqtSignal(str)
     finished = pyqtSignal()
 
@@ -298,6 +309,8 @@ class SaveDataWorker(QObject):
         robot: Optional[RobotLike],
         save_dir: str,
         index: int,
+        rows: int,
+        cols: int,
         mock: bool = False,
     ) -> None:
         super().__init__()
@@ -305,12 +318,16 @@ class SaveDataWorker(QObject):
         self.robot = robot
         self.save_dir = save_dir
         self.index = index
+        # OpenCV: patternSize = Size(inner_corners_per_row, inner_corners_per_column).
+        # 与 out_of_hand_homogeneous_matrix/main.py 中 (XX, YY) 一致：默认 12×9 方格 → (11, 8)。
+        self._inner_row = rows - 1
+        self._inner_col = cols - 1
         self.mock = mock
 
     def run(self) -> None:
         try:
             if self.mock:
-                color = np.random.randint(0, 256, (480, 640, 3), dtype=np.uint8)
+                color = self._mock_chessboard_image()
                 pose = [-0.226, -0.003, 0.523, -0.01, 0.028, 2.65]
             else:
                 if self.camera is None:
@@ -330,12 +347,64 @@ class SaveDataWorker(QObject):
             with open(pose_file, "a") as fp:
                 fp.write(",".join(str(v) for v in pose) + "\n")
 
+            preview, detected = self._render_chessboard(color)
+            self.preview_ready.emit(preview, detected)
+
             self.save_done.emit(True, self.index)
         except Exception as exc:
             self.error_occurred.emit(str(exc))
             self.save_done.emit(False, self.index)
         finally:
             self.finished.emit()
+
+    def _render_chessboard(self, color: np.ndarray) -> Tuple[np.ndarray, bool]:
+        """Run ``findChessboardCorners`` and overlay them on a copy.
+
+        Returns ``(rendered_image, success)``. On failure, returns the raw
+        frame with a banner so the operator can still see the captured image.
+        """
+        display = color.copy()
+        try:
+            gray = cv2.cvtColor(color, cv2.COLOR_BGR2GRAY)
+            ret, corners = cv2.findChessboardCorners(
+                gray, (self._inner_row, self._inner_col),
+                flags=cv2.CALIB_CB_ADAPTIVE_THRESH,
+            )
+            if ret:
+                cv2.drawChessboardCorners(
+                    display, (self._inner_row, self._inner_col), corners, ret)
+                cv2.putText(display, f"#{self.index} OK", (10, 30),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
+                self.log_message.emit(
+                    f"图片 {self.index} 角点检测成功 ({self._inner_row}x{self._inner_col})")
+                return display, True
+            self.log_message.emit(
+                f"⚠ 图片 {self.index} 未检测到 {self._inner_row}x{self._inner_col} 角点 "
+                f"(图片已保存，但建议撤销并重新拍摄)")
+            cv2.putText(display, f"#{self.index} NO CORNERS", (10, 30),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2)
+            return display, False
+        except Exception as exc:
+            self.log_message.emit(f"⚠ 角点检测异常: {exc}")
+            return display, False
+
+    @staticmethod
+    def _mock_chessboard_image() -> np.ndarray:
+        """Render a deterministic chessboard for mock mode (so detection succeeds)."""
+        h, w = 480, 640
+        img = np.full((h, w, 3), 230, dtype=np.uint8)
+        sq = 35
+        rows, cols = 9, 12
+        x0 = (w - cols * sq) // 2
+        y0 = (h - rows * sq) // 2
+        for r in range(rows):
+            for c in range(cols):
+                if (r + c) % 2 == 0:
+                    cv2.rectangle(img,
+                                  (x0 + c * sq, y0 + r * sq),
+                                  (x0 + (c + 1) * sq, y0 + (r + 1) * sq),
+                                  (20, 20, 20), -1)
+        return img
 
 
 class CalibrationWorker(QObject):
@@ -359,8 +428,9 @@ class CalibrationWorker(QObject):
         self.images_dir = images_dir
         self.poses_file = poses_file
         self.intrinsics = intrinsics
-        self.xx = cols - 1
-        self.yy = rows - 1
+        # 与 main.py 中 XX=行方格数-1, YY=列方格数-1 一致（默认 12×9 → 11×8）
+        self.xx = rows - 1
+        self.yy = cols - 1
         self.spacing = spacing
         self.save_dir = save_dir
         self.mock = mock
@@ -605,6 +675,77 @@ class LogWidget(QTextEdit):
         sb.setValue(sb.maximum())
 
 
+class ResultPreviewWidget(QWidget):
+    """Shows the most recently captured frame with detected chessboard corners.
+
+    The widget exposes :meth:`update_preview` which accepts a BGR ``ndarray``
+    plus a ``success`` flag; the underlying QLabel auto-scales the pixmap
+    while preserving aspect ratio. Resize events trigger a re-render so the
+    image always fills the available area.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(2)
+
+        self._title = QLabel("最近一次采集预览")
+        self._title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(self._title)
+
+        self._image_label = QLabel("尚无预览")
+        self._image_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._image_label.setStyleSheet("background-color: #1a1a1a; color: #888;")
+        self._image_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self._image_label.setMinimumSize(160, 120)
+        layout.addWidget(self._image_label, stretch=1)
+
+        self._status = QLabel("—")
+        self._status.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(self._status)
+
+        self._raw_pixmap: Optional[QPixmap] = None
+
+    def update_preview(self, image: object, success: bool) -> None:
+        if not isinstance(image, np.ndarray):
+            return
+        pix = cv2_to_qpixmap(image)
+        if pix.isNull():
+            return
+        self._raw_pixmap = pix
+        self._render_scaled()
+        if success:
+            self._status.setText("✓ 角点检测成功")
+            self._status.setStyleSheet("color: #2c7a2c;")
+        else:
+            self._status.setText("✗ 未检测到角点")
+            self._status.setStyleSheet("color: #b00020;")
+
+    def clear(self) -> None:
+        self._raw_pixmap = None
+        self._image_label.setPixmap(QPixmap())
+        self._image_label.setText("尚无预览")
+        self._status.setText("—")
+        self._status.setStyleSheet("")
+
+    def resizeEvent(self, event: Any) -> None:  # noqa: N802
+        super().resizeEvent(event)
+        self._render_scaled()
+
+    def _render_scaled(self) -> None:
+        if self._raw_pixmap is None or self._raw_pixmap.isNull():
+            return
+        target = self._image_label.size()
+        if target.width() <= 0 or target.height() <= 0:
+            return
+        self._image_label.setPixmap(self._raw_pixmap.scaled(
+            target,
+            Qt.AspectRatioMode.KeepAspectRatio,
+            Qt.TransformationMode.SmoothTransformation,
+        ))
+
+
 class ControlPanel(QWidget):
     """Left-side control panel with three QGroupBox modules."""
 
@@ -764,10 +905,18 @@ class CalibrationGUI(QMainWindow):
         self.panel = ControlPanel()
         self.video_widget = VideoWidget()
         self.log_widget = LogWidget()
+        self.preview_widget = ResultPreviewWidget()
+
+        bottom_splitter = QSplitter(Qt.Orientation.Horizontal)
+        bottom_splitter.addWidget(self.log_widget)
+        bottom_splitter.addWidget(self.preview_widget)
+        bottom_splitter.setStretchFactor(0, 3)
+        bottom_splitter.setStretchFactor(1, 2)
+        bottom_splitter.setSizes([600, 400])
 
         grid.addWidget(self.panel, 0, 0, 2, 1)
         grid.addWidget(self.video_widget, 0, 1)
-        grid.addWidget(self.log_widget, 1, 1)
+        grid.addWidget(bottom_splitter, 1, 1)
 
         grid.setColumnStretch(0, 1)
         grid.setColumnStretch(1, 2)
@@ -900,14 +1049,20 @@ class CalibrationGUI(QMainWindow):
             return
         self.sm.force(GUIState.COLLECTING)
 
+        rows = self.panel.spin_rows.value()
+        cols = self.panel.spin_cols.value()
+
         self._save_thread = QThread(self)
         worker = SaveDataWorker(
             camera=self._camera, robot=self.robot,
-            save_dir=self._save_dir, index=self._collected, mock=self.mock,
+            save_dir=self._save_dir, index=self._collected,
+            rows=rows, cols=cols, mock=self.mock,
         )
         worker.moveToThread(self._save_thread)
         self._save_thread.started.connect(worker.run)
         worker.save_done.connect(self._on_save_done)
+        worker.preview_ready.connect(self.preview_widget.update_preview)
+        worker.log_message.connect(lambda m: print(m))
         worker.error_occurred.connect(lambda m: print(f"保存错误: {m}"))
         worker.finished.connect(self._save_thread.quit)
         self._save_worker = worker
@@ -947,6 +1102,8 @@ class CalibrationGUI(QMainWindow):
 
         self._collected = last
         self._update_progress()
+        if self._collected == 0:
+            self.preview_widget.clear()
         print(f"已撤销第 {last} 组数据")
         self._sync_ui()
 
