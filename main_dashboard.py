@@ -18,11 +18,12 @@ from __future__ import annotations
 import os
 import sys
 import subprocess
+import time
 from datetime import datetime
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, Optional, Tuple
 
 import numpy as np
-from PyQt5.QtCore import Qt, QSize, pyqtSignal
+from PyQt5.QtCore import QObject, Qt, QThread, pyqtSignal
 from PyQt5.QtGui import QFont, QImage, QPixmap, QResizeEvent
 from PyQt5.QtWidgets import (
     QApplication,
@@ -215,6 +216,217 @@ class CameraView(QLabel):
 
 
 # ---------------------------------------------------------------------------
+# 硬件 Worker：相机初始化 / 视频流 / 机械臂连接 / 状态轮询 / 运动执行
+# ---------------------------------------------------------------------------
+class RealSenseCamera:
+    """轻量 RealSense 封装，提供与项目其它 GUI 一致的 get_img/stop 接口。"""
+
+    def __init__(self, width: int = 640, height: int = 480, fps: int = 30) -> None:
+        import pyrealsense2 as rs
+
+        self._rs = rs
+        self._pipeline = rs.pipeline()
+        config = rs.config()
+        config.enable_stream(rs.stream.depth, width, height, rs.format.z16, fps)
+        config.enable_stream(rs.stream.color, width, height, rs.format.bgr8, fps)
+        self._profile = self._pipeline.start(config)
+        self._align = rs.align(rs.stream.color)
+        for _ in range(5):
+            self._pipeline.wait_for_frames()
+
+    def get_img(self) -> Tuple[np.ndarray, np.ndarray]:
+        frames = self._pipeline.wait_for_frames()
+        aligned = self._align.process(frames)
+        depth = np.asanyarray(aligned.get_depth_frame().get_data())
+        color = np.asanyarray(aligned.get_color_frame().get_data())
+        return depth, color
+
+    def stop(self) -> None:
+        self._pipeline.stop()
+
+
+class CameraInitWorker(QObject):
+    """后台初始化 RealSense，避免启动相机时卡住主界面。"""
+
+    init_done = pyqtSignal(bool, object)
+    error_occurred = pyqtSignal(str)
+    finished = pyqtSignal()
+
+    def __init__(self, width: int = 640, height: int = 480, fps: int = 30) -> None:
+        super().__init__()
+        self.width = width
+        self.height = height
+        self.fps = fps
+
+    def run(self) -> None:
+        try:
+            cam = RealSenseCamera(self.width, self.height, self.fps)
+            self.init_done.emit(True, cam)
+        except Exception as exc:
+            self.error_occurred.emit(str(exc))
+            self.init_done.emit(False, None)
+        finally:
+            self.finished.emit()
+
+
+class CameraStreamWorker(QObject):
+    """持续读取相机画面并发送到 UI。"""
+
+    frame_ready = pyqtSignal(object)
+    error_occurred = pyqtSignal(str)
+    finished = pyqtSignal()
+
+    def __init__(self, camera: RealSenseCamera) -> None:
+        super().__init__()
+        self.camera = camera
+        self._running = False
+
+    def run(self) -> None:
+        self._running = True
+        while self._running:
+            try:
+                _, color = self.camera.get_img()
+                self.frame_ready.emit(color)
+            except Exception as exc:
+                self.error_occurred.emit(str(exc))
+                time.sleep(0.2)
+            time.sleep(0.03)
+        self.finished.emit()
+
+    def stop(self) -> None:
+        self._running = False
+
+
+class RobotConnectWorker(QObject):
+    """连接 RealMan 机械臂并初始化夹爪。"""
+
+    connected = pyqtSignal(bool, object, object)
+    error_occurred = pyqtSignal(str)
+    finished = pyqtSignal()
+
+    def __init__(self, ip: str = "192.168.127.101", port: int = 8080) -> None:
+        super().__init__()
+        self.ip = ip
+        self.port = port
+
+    def run(self) -> None:
+        try:
+            from Robotic_Arm.rm_robot_interface import RoboticArm, rm_thread_mode_e
+            from gripper_zhiyuan import GripperZhiyuan
+
+            robot = RoboticArm(rm_thread_mode_e.RM_TRIPLE_MODE_E)
+            handle = robot.rm_create_robot_arm(self.ip, self.port)
+            robot.rm_set_collision_state(5)
+
+            gripper = GripperZhiyuan(robot)
+            try:
+                gripper.gripper_initial()
+            except Exception as exc:
+                # 夹爪初始化失败不应阻断机械臂状态查看；后续夹爪按钮会继续报具体错误。
+                self.error_occurred.emit(f"夹爪初始化失败: {exc}")
+
+            self.connected.emit(True, robot, gripper)
+            self.error_occurred.emit(f"机械臂连接句柄: {handle}")
+        except Exception as exc:
+            self.error_occurred.emit(str(exc))
+            self.connected.emit(False, None, None)
+        finally:
+            self.finished.emit()
+
+
+class RobotStateWorker(QObject):
+    """轮询机械臂当前状态，用于示教器式实时显示。"""
+
+    state_ready = pyqtSignal(object)
+    error_occurred = pyqtSignal(str)
+    finished = pyqtSignal()
+
+    def __init__(self, robot: Any, interval_s: float = 0.2) -> None:
+        super().__init__()
+        self.robot = robot
+        self.interval_s = interval_s
+        self._running = False
+
+    def run(self) -> None:
+        self._running = True
+        while self._running:
+            try:
+                ret, state = self.robot.rm_get_current_arm_state()
+                if ret != 0:
+                    self.error_occurred.emit(f"获取机械臂状态失败，错误码: {ret}")
+                else:
+                    self.state_ready.emit(state)
+            except Exception as exc:
+                self.error_occurred.emit(str(exc))
+            time.sleep(self.interval_s)
+        self.finished.emit()
+
+    def stop(self) -> None:
+        self._running = False
+
+
+class RobotCommandWorker(QObject):
+    """执行一次机械臂命令，避免运动命令阻塞 UI。"""
+
+    command_done = pyqtSignal(bool, str)
+    finished = pyqtSignal()
+
+    def __init__(self, robot: Any, command: str, payload: object = None, speed: int = 20) -> None:
+        super().__init__()
+        self.robot = robot
+        self.command = command
+        self.payload = payload
+        self.speed = speed
+
+    def run(self) -> None:
+        try:
+            if self.command == "movej":
+                joints = list(self.payload or [])
+                ret = self.robot.rm_movej(joints, self.speed, 0, 0, 1)
+                ok = ret == 0
+                msg = "关节运动完成" if ok else f"关节运动失败，返回码: {ret}"
+            elif self.command == "movel":
+                pose = list(self.payload or [])
+                ret = self.robot.rm_movel(pose, self.speed, 0, 0, 1)
+                ok = ret == 0
+                msg = "位姿直线运动完成" if ok else f"位姿直线运动失败，返回码: {ret}"
+            elif self.command == "stop":
+                ret = self.robot.rm_set_arm_stop()
+                ok = ret == 0
+                msg = "停止命令已发送" if ok else f"停止失败，返回码: {ret}"
+            else:
+                ok = False
+                msg = f"未知命令: {self.command}"
+            self.command_done.emit(ok, msg)
+        except Exception as exc:
+            self.command_done.emit(False, str(exc))
+        finally:
+            self.finished.emit()
+
+
+class GripperWorker(QObject):
+    """夹爪开合命令。"""
+
+    command_done = pyqtSignal(bool, str)
+    finished = pyqtSignal()
+
+    def __init__(self, gripper: Any, position: float) -> None:
+        super().__init__()
+        self.gripper = gripper
+        self.position = position
+
+    def run(self) -> None:
+        try:
+            self.gripper.gripper_position(self.position)
+            text = "夹爪打开完成" if self.position > 0 else "夹爪关闭完成"
+            self.command_done.emit(True, text)
+        except Exception as exc:
+            self.command_done.emit(False, str(exc))
+        finally:
+            self.finished.emit()
+
+
+# ---------------------------------------------------------------------------
 # 关节单元（标签 + 数值框 + “-” / “+” 按钮，带限位）
 # ---------------------------------------------------------------------------
 class JointRow(QWidget):
@@ -296,7 +508,10 @@ class JointRow(QWidget):
 
     def set_value(self, v: float) -> None:
         v = max(self._low, min(self._high, float(v)))
+        self._spin.blockSignals(True)
         self._spin.setValue(v)
+        self._spin.blockSignals(False)
+        self._refresh_button_state()
 
 
 # ---------------------------------------------------------------------------
@@ -315,11 +530,30 @@ class MainDashboard(QMainWindow):
 
         # 子进程句柄：避免重复启动外部 GUI
         self._sub_procs: Dict[str, subprocess.Popen] = {}
+        self._robot: Optional[Any] = None
+        self._gripper: Optional[Any] = None
+        self._camera: Optional[RealSenseCamera] = None
+        self._robot_connected = False
+        self._target_mode = "joint"  # joint / pose：用户最后一次编辑的目标类型
+        self._manual_override = False  # 用户编辑后暂停用实时状态覆盖目标输入
+        self._updating_from_robot = False
+        self._last_state_log_ts = 0.0
+
+        self._robot_connect_thread: Optional[QThread] = None
+        self._robot_state_thread: Optional[QThread] = None
+        self._robot_state_worker: Optional[RobotStateWorker] = None
+        self._cmd_thread: Optional[QThread] = None
+        self._gripper_thread: Optional[QThread] = None
+        self._camera_init_thread: Optional[QThread] = None
+        self._camera_stream_thread: Optional[QThread] = None
+        self._camera_stream_worker: Optional[CameraStreamWorker] = None
 
         self._build_ui()
         self._wire_signals()
 
         self.append_log("系统初始化完成", level="INFO")
+        self._sync_hardware_buttons()
+        self._start_camera()
 
     # ─────────────────────────── UI 构建 ───────────────────────────
     def _build_ui(self) -> None:
@@ -486,14 +720,10 @@ class MainDashboard(QMainWindow):
         self.btn_spare2.clicked.connect(self.on_btn_spare2_clicked)
 
         # 机械臂顶部按钮
-        self.btn_connect.clicked.connect(
-            lambda: self.append_log("点击 [连接] — 尝试连接机械臂", level="INFO"))
-        self.btn_disconnect.clicked.connect(
-            lambda: self.append_log("点击 [断开连接] — 释放机械臂连接", level="INFO"))
-        self.btn_gripper_open.clicked.connect(
-            lambda: self.append_log("点击 [夹爪开]", level="INFO"))
-        self.btn_gripper_close.clicked.connect(
-            lambda: self.append_log("点击 [夹爪关]", level="INFO"))
+        self.btn_connect.clicked.connect(self._on_connect_clicked)
+        self.btn_disconnect.clicked.connect(self._on_disconnect_clicked)
+        self.btn_gripper_open.clicked.connect(lambda: self._run_gripper(1.0))
+        self.btn_gripper_close.clicked.connect(lambda: self._run_gripper(0.0))
 
         # 工作空间输入框：编辑结束后打日志
         for name, edit in self.pose_inputs.items():
@@ -506,8 +736,7 @@ class MainDashboard(QMainWindow):
 
         # 底部移动 / 停止
         self.btn_move.clicked.connect(self._on_move_clicked)
-        self.btn_stop.clicked.connect(
-            lambda: self.append_log("点击 [停止] — 立即停止机械臂运动", level="WARN"))
+        self.btn_stop.clicked.connect(self._on_stop_clicked)
 
         # 相机帧信号 → CameraView
         self.camera_frame_received.connect(self.camera_view.update_frame)
@@ -524,6 +753,210 @@ class MainDashboard(QMainWindow):
         self.log_widget.appendPlainText(line)
         sb = self.log_widget.verticalScrollBar()
         sb.setValue(sb.maximum())
+
+    # ─────────────────────────── 硬件：相机 ───────────────────────────
+    def _start_camera(self) -> None:
+        """启动右下角 RealSense 实时图像。
+
+        示教器类界面需要持续反馈现场画面；这里在主窗口启动后自动初始化相机，
+        初始化失败时保留 Camera View 占位，并把错误写入日志。
+        """
+        if self._camera is not None or (
+            self._camera_init_thread is not None and self._camera_init_thread.isRunning()
+        ):
+            return
+        self.append_log("正在启动实时相机预览...", level="INFO")
+        self._camera_init_thread = QThread(self)
+        worker = CameraInitWorker(640, 480, 30)
+        worker.moveToThread(self._camera_init_thread)
+        self._camera_init_thread.started.connect(worker.run)
+        worker.init_done.connect(self._on_camera_init_done)
+        worker.error_occurred.connect(lambda m: self.append_log(f"相机启动失败: {m}", "ERROR"))
+        worker.finished.connect(self._camera_init_thread.quit)
+        self._camera_init_worker = worker
+        self._camera_init_thread.start()
+
+    def _on_camera_init_done(self, ok: bool, camera: object) -> None:
+        if not ok or camera is None:
+            self.append_log("实时相机未启动，保持占位画面", level="WARN")
+            return
+        self._camera = camera
+        self.append_log("实时相机启动成功", level="INFO")
+        self._camera_stream_thread = QThread(self)
+        worker = CameraStreamWorker(self._camera)
+        worker.moveToThread(self._camera_stream_thread)
+        self._camera_stream_thread.started.connect(worker.run)
+        worker.frame_ready.connect(self.update_camera_frame)
+        worker.error_occurred.connect(lambda m: self.append_log(f"相机取流错误: {m}", "ERROR"))
+        worker.finished.connect(self._camera_stream_thread.quit)
+        self._camera_stream_worker = worker
+        self._camera_stream_thread.start()
+
+    # ─────────────────────────── 硬件：机械臂连接与状态 ───────────────────────────
+    def _on_connect_clicked(self) -> None:
+        if self._robot_connected:
+            self.append_log("机械臂已经连接", level="WARN")
+            return
+        self.append_log("正在连接机械臂 192.168.127.101:8080 ...", level="INFO")
+        self.btn_connect.setEnabled(False)
+        self._robot_connect_thread = QThread(self)
+        worker = RobotConnectWorker("192.168.127.101", 8080)
+        worker.moveToThread(self._robot_connect_thread)
+        self._robot_connect_thread.started.connect(worker.run)
+        worker.connected.connect(self._on_robot_connected)
+        worker.error_occurred.connect(lambda m: self.append_log(m, "INFO"))
+        worker.finished.connect(self._robot_connect_thread.quit)
+        self._robot_connect_worker = worker
+        self._robot_connect_thread.start()
+
+    def _on_robot_connected(self, ok: bool, robot: object, gripper: object) -> None:
+        if not ok or robot is None:
+            self._robot_connected = False
+            self._robot = None
+            self._gripper = None
+            self.append_log("机械臂连接失败", level="ERROR")
+            self._sync_hardware_buttons()
+            return
+        self._robot = robot
+        self._gripper = gripper
+        self._robot_connected = True
+        self._manual_override = False
+        self.append_log("机械臂连接成功，开始实时刷新位姿/关节状态", level="INFO")
+        self._start_robot_state_polling()
+        self._sync_hardware_buttons()
+
+    def _start_robot_state_polling(self) -> None:
+        if self._robot is None:
+            return
+        self._stop_robot_state_polling()
+        self._robot_state_thread = QThread(self)
+        worker = RobotStateWorker(self._robot, interval_s=0.2)
+        worker.moveToThread(self._robot_state_thread)
+        self._robot_state_thread.started.connect(worker.run)
+        worker.state_ready.connect(self._on_robot_state_ready)
+        worker.error_occurred.connect(self._on_robot_state_error)
+        worker.finished.connect(self._robot_state_thread.quit)
+        self._robot_state_worker = worker
+        self._robot_state_thread.start()
+
+    def _stop_robot_state_polling(self) -> None:
+        if self._robot_state_worker is not None:
+            self._robot_state_worker.stop()
+        if self._robot_state_thread is not None:
+            self._robot_state_thread.quit()
+            self._robot_state_thread.wait(1500)
+        self._robot_state_worker = None
+        self._robot_state_thread = None
+
+    def _on_robot_state_error(self, message: str) -> None:
+        # 状态轮询可能在网络抖动时频繁失败，限频写日志。
+        now = time.time()
+        if now - self._last_state_log_ts > 2.0:
+            self._last_state_log_ts = now
+            self.append_log(f"机械臂状态刷新异常: {message}", level="WARN")
+
+    def _on_robot_state_ready(self, state: object) -> None:
+        pose, joints = self._extract_pose_and_joints(state)
+        if pose is None and joints is None:
+            self._on_robot_state_error(f"无法解析状态字段: {state}")
+            return
+        if self._manual_override:
+            # 用户正在编辑目标值时不覆盖输入框；移动/停止后会重新恢复实时刷新。
+            return
+        self._updating_from_robot = True
+        try:
+            if pose is not None:
+                for name, value in zip(("X", "Y", "Z", "Rx", "Ry", "Rz"), pose):
+                    self.pose_inputs[name].setText(f"{float(value):.6f}")
+            if joints is not None:
+                for name, value in zip(("J1", "J2", "J3", "J4", "J5", "J6"), joints):
+                    self.joint_rows[name].set_value(float(value))
+        finally:
+            self._updating_from_robot = False
+
+    @staticmethod
+    def _extract_pose_and_joints(state: object) -> Tuple[Optional[Tuple[float, ...]], Optional[Tuple[float, ...]]]:
+        """从 RealMan 返回的状态字典中兼容解析 pose / joints。
+
+        不同 SDK 版本字段名可能略有差异，因此这里做宽松匹配。
+        """
+        if not isinstance(state, dict):
+            return None, None
+
+        def as_six(value: object) -> Optional[Tuple[float, ...]]:
+            if isinstance(value, np.ndarray):
+                value = value.tolist()
+            if isinstance(value, (list, tuple)) and len(value) >= 6:
+                try:
+                    return tuple(float(x) for x in value[:6])
+                except (TypeError, ValueError):
+                    return None
+            return None
+
+        pose = None
+        for key in ("pose", "arm_pose", "tool_pose", "tcp_pose", "end_pose"):
+            pose = as_six(state.get(key))
+            if pose is not None:
+                break
+
+        joints = None
+        for key in ("joint", "joints", "joint_angle", "joint_angles", "joint_pos", "joint_position"):
+            joints = as_six(state.get(key))
+            if joints is not None:
+                break
+
+        # 某些 SDK 会把关节状态包在 joint_status / arm_state 里。
+        for parent_key in ("joint_status", "arm_state", "status"):
+            parent = state.get(parent_key)
+            if isinstance(parent, dict):
+                if joints is None:
+                    for key in ("joint", "joints", "joint_angle", "joint_angles", "joint_position"):
+                        joints = as_six(parent.get(key))
+                        if joints is not None:
+                            break
+                if pose is None:
+                    for key in ("pose", "arm_pose", "tool_pose", "tcp_pose"):
+                        pose = as_six(parent.get(key))
+                        if pose is not None:
+                            break
+        return pose, joints
+
+    def _on_disconnect_clicked(self) -> None:
+        self.append_log("正在断开机械臂连接...", level="INFO")
+        self._stop_robot_state_polling()
+        if self._gripper is not None:
+            close_fn = getattr(self._gripper, "Motor_Close", None)
+            if callable(close_fn):
+                try:
+                    close_fn()
+                except Exception as exc:
+                    self.append_log(f"夹爪关闭通信失败: {exc}", level="WARN")
+        if self._robot is not None:
+            for name in ("rm_delete_robot_arm", "rm_close_robot_arm"):
+                close_fn = getattr(self._robot, name, None)
+                if callable(close_fn):
+                    try:
+                        close_fn()
+                    except Exception as exc:
+                        self.append_log(f"机械臂关闭接口 {name} 异常: {exc}", level="WARN")
+                    break
+        self._robot = None
+        self._gripper = None
+        self._robot_connected = False
+        self._manual_override = False
+        self._sync_hardware_buttons()
+        self.append_log("机械臂已断开", level="INFO")
+
+    def _sync_hardware_buttons(self) -> None:
+        self.btn_connect.setEnabled(not self._robot_connected)
+        for btn in (
+            self.btn_disconnect,
+            self.btn_gripper_open,
+            self.btn_gripper_close,
+            self.btn_move,
+            self.btn_stop,
+        ):
+            btn.setEnabled(self._robot_connected)
 
     # ─────────────────────────── 功能区占位函数 ───────────────────────────
     def on_btn_grasp_clicked(self) -> None:
@@ -563,15 +996,94 @@ class MainDashboard(QMainWindow):
         except ValueError:
             self.append_log(f"工作空间 {name} 输入非法: {text!r}", level="ERROR")
             return
+        self._target_mode = "pose"
+        self._manual_override = True
         self.append_log(f"工作空间 {name} = {val:.3f}", level="INFO")
 
     def _on_joint_changed(self, name: str, value: float) -> None:
+        if self._updating_from_robot:
+            return
+        self._target_mode = "joint"
+        self._manual_override = True
         self.append_log(f"关节空间 {name} = {value:.2f}°", level="INFO")
 
     def _on_move_clicked(self) -> None:
+        if not self._robot_connected or self._robot is None:
+            self.append_log("机械臂未连接，无法移动", level="ERROR")
+            return
+        if self._cmd_thread is not None and self._cmd_thread.isRunning():
+            self.append_log("已有机械臂运动命令正在执行", level="WARN")
+            return
+
+        if self._target_mode == "pose":
+            target = self._collect_pose_target()
+            if target is None:
+                return
+            target_str = ", ".join(f"{v:.6f}" for v in target)
+            self.append_log(f"点击 [移动] — 目标位姿: {target_str}", level="INFO")
+            self._run_robot_command("movel", target)
+            return
+
         joint_state = {n: r.value() for n, r in self.joint_rows.items()}
+        target = [joint_state[f"J{i}"] for i in range(1, 7)]
         joint_str = ", ".join(f"{k}={v:.2f}" for k, v in joint_state.items())
         self.append_log(f"点击 [移动] — 目标关节角: {joint_str}", level="INFO")
+        self._run_robot_command("movej", target)
+
+    def _collect_pose_target(self) -> Optional[list[float]]:
+        values = []
+        for name in ("X", "Y", "Z", "Rx", "Ry", "Rz"):
+            text = self.pose_inputs[name].text().strip()
+            try:
+                values.append(float(text))
+            except ValueError:
+                self.append_log(f"目标位姿 {name} 不是有效数字: {text!r}", level="ERROR")
+                return None
+        return values
+
+    def _on_stop_clicked(self) -> None:
+        if not self._robot_connected or self._robot is None:
+            self.append_log("机械臂未连接，无法停止", level="ERROR")
+            return
+        self.append_log("点击 [停止] — 立即停止机械臂运动", level="WARN")
+        self._manual_override = False
+        self._run_robot_command("stop", None)
+
+    def _run_robot_command(self, command: str, payload: object) -> None:
+        if self._robot is None:
+            return
+        self._cmd_thread = QThread(self)
+        worker = RobotCommandWorker(self._robot, command, payload, speed=20)
+        worker.moveToThread(self._cmd_thread)
+        self._cmd_thread.started.connect(worker.run)
+        worker.command_done.connect(self._on_robot_command_done)
+        worker.finished.connect(self._cmd_thread.quit)
+        self._cmd_worker = worker
+        self._cmd_thread.start()
+
+    def _on_robot_command_done(self, ok: bool, message: str) -> None:
+        self.append_log(message, level="INFO" if ok else "ERROR")
+        if ok:
+            self._manual_override = False
+
+    def _run_gripper(self, position: float) -> None:
+        if not self._robot_connected or self._gripper is None:
+            self.append_log("机械臂/夹爪未连接，无法执行夹爪命令", level="ERROR")
+            return
+        if self._gripper_thread is not None and self._gripper_thread.isRunning():
+            self.append_log("已有夹爪命令正在执行", level="WARN")
+            return
+        action = "夹爪开" if position > 0 else "夹爪关"
+        self.append_log(f"点击 [{action}]", level="INFO")
+        self._gripper_thread = QThread(self)
+        worker = GripperWorker(self._gripper, position)
+        worker.moveToThread(self._gripper_thread)
+        self._gripper_thread.started.connect(worker.run)
+        worker.command_done.connect(
+            lambda ok, msg: self.append_log(msg, "INFO" if ok else "ERROR"))
+        worker.finished.connect(self._gripper_thread.quit)
+        self._gripper_worker = worker
+        self._gripper_thread.start()
 
     # ─────────────────────────── 子界面进程管理 ───────────────────────────
     def _launch_subprocess(self, tag: str, script_name: str, label: str) -> None:
@@ -610,6 +1122,20 @@ class MainDashboard(QMainWindow):
 
     # ─────────────────────────── 关闭事件 ───────────────────────────
     def closeEvent(self, event) -> None:  # noqa: N802
+        self._stop_robot_state_polling()
+        if self._camera_stream_worker is not None:
+            self._camera_stream_worker.stop()
+        if self._camera_stream_thread is not None:
+            self._camera_stream_thread.quit()
+            self._camera_stream_thread.wait(1500)
+        if self._camera is not None:
+            try:
+                self._camera.stop()
+            except Exception as exc:
+                self.append_log(f"相机关闭异常: {exc}", level="WARN")
+        if self._robot_connected:
+            self._on_disconnect_clicked()
+
         # 主窗口关闭时不强制关闭子界面进程（让用户自己决定是否保留），
         # 仅做日志记录；如需强杀，可解除下方注释。
         for tag, proc in self._sub_procs.items():
