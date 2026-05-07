@@ -23,8 +23,9 @@ from datetime import datetime
 from typing import Any, Dict, Optional, Tuple
 
 import numpy as np
-from PyQt5.QtCore import QObject, Qt, QThread, pyqtSignal
-from PyQt5.QtGui import QFont, QImage, QPixmap, QResizeEvent
+from PyQt5.QtCore import QObject, QSize, Qt, QThread, pyqtSignal
+from PyQt5.QtGui import QFont, QIcon, QImage, QPainter, QPixmap, QResizeEvent
+from PyQt5.QtSvg import QSvgRenderer
 from PyQt5.QtWidgets import (
     QApplication,
     QDoubleSpinBox,
@@ -39,6 +40,7 @@ from PyQt5.QtWidgets import (
     QPushButton,
     QSizePolicy,
     QSpacerItem,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
@@ -106,6 +108,37 @@ QPushButton#PrimaryBig {
     font-weight: 600;
     min-height: 56px;
 }
+/* ─── 功能区瓷砖按钮 (FunctionTile) ───
+ *   ▸ 想改背景色 / 字色 / 圆角 / 边框 → 改下面四组的 background-color、color 等
+ *   ▸ 想改"图标到按钮顶部 + 文字到按钮底部"的留白 → 改 padding (顺序: 上 右 下 左)
+ *     - padding 第 1 个值变大 → 图标距顶部更远
+ *     - padding 第 3 个值变大 → 文字距底部更远
+ *   ▸ 想改图标和文字之间的间距 → 见 FunctionTile 类里的 self.setStyleSheet 备注
+ *   ▸ 想改文字大小 / 粗细 → 改 font-size / font-weight
+ */
+QToolButton#FunctionTile {
+    background-color: #dde6ef;
+    color: #1a3656;
+    border: 1px solid #b6c2cf;
+    border-radius: 6px;
+    padding: 8px 6px 8px 6px;
+    font-size: 14px;
+    font-weight: 600;
+}
+QToolButton#FunctionTile:hover {
+    background-color: #cfdfee;
+    border-color: #3b78b3;
+    color: #14304f;
+}
+QToolButton#FunctionTile:pressed {
+    background-color: #b9d2eb;
+    border-color: #2b5a82;
+}
+QToolButton#FunctionTile:disabled {
+    background-color: #d8dde2;
+    color: #8a96a3;
+    border-color: #c0c8d0;
+}
 QPushButton#JointStep {
     background-color: #5d6d7e;
     border-color: #34495e;
@@ -164,6 +197,138 @@ def cv2_to_qpixmap(bgr: np.ndarray) -> QPixmap:
     h, w, ch = rgb.shape
     qimg = QImage(rgb.data, w, h, ch * w, QImage.Format_RGB888)
     return QPixmap.fromImage(qimg)
+
+
+# ---------------------------------------------------------------------------
+# 功能区按钮：图标在上、文字在下；图标使用 SVG 矢量渲染，HiDPI 友好
+# ---------------------------------------------------------------------------
+# 调整功能区按钮"图案大小 / 位置 / 间距"的全部参数都集中在这一段：
+#
+#   1. 图标边长（逻辑像素）。改大 → 图案更大，改小 → 图案更小。
+TILE_ICON_SIZE = 56
+#
+#   2. 按钮整体最小高度。撑大它图案与文字会被往中间居中，整块按钮更显眼。
+TILE_MIN_HEIGHT = 110
+#
+#   3. 图标到文字的间距（像素）。Qt 的 QToolButton 默认 spacing≈4，
+#      想让图文更紧凑就调小，想拉开就调大。
+TILE_ICON_TEXT_SPACING = 2
+#
+# 备注：图标到"按钮顶部"以及文字到"按钮底部"的留白，由 QSS 中
+#       QToolButton#FunctionTile 的 padding 控制（顺序：上 右 下 左）。
+#       例如想让图标更贴近顶部，就把 padding 第 1 个值改小。
+
+
+def _render_svg_to_pixmap(svg_path: str, size: int) -> QPixmap:
+    """把 SVG 文件渲染为 ``size×size`` 的高质量 ``QPixmap``。
+
+    若 SVG 加载失败则返回空 ``QPixmap``，调用方应自行处理（按钮会退化为纯文字）。
+    HiDPI 下 ``QApplication`` 已经设置了 ``AA_UseHighDpiPixmaps``，这里基于
+    ``devicePixelRatio`` 渲染高分辨率位图，避免按钮上图标发虚。
+    """
+    if not os.path.isfile(svg_path):
+        return QPixmap()
+    renderer = QSvgRenderer(svg_path)
+    if not renderer.isValid():
+        return QPixmap()
+    dpr = max(1.0, QApplication.primaryScreen().devicePixelRatio() if QApplication.instance() else 1.0)
+    pixel = max(1, int(round(size * dpr)))
+    pix = QPixmap(pixel, pixel)
+    pix.fill(Qt.transparent)
+    painter = QPainter(pix)
+    painter.setRenderHint(QPainter.Antialiasing, True)
+    painter.setRenderHint(QPainter.SmoothPixmapTransform, True)
+    renderer.render(painter)
+    painter.end()
+    pix.setDevicePixelRatio(dpr)
+    return pix
+
+
+class FunctionTile(QToolButton):
+    """主控台功能区瓷砖按钮：上图下字、间距由 TILE_ICON_TEXT_SPACING 控制。
+
+    Qt 自带的 ``ToolButtonTextUnderIcon`` 由系统 style 决定图文间距，无法精确
+    调整；这里改为 ``ToolButtonIconOnly`` + 自定义 :meth:`paintEvent`，把图标
+    与文字按设定间距居中绘制，从而支持"图文紧凑"的视觉需求。
+    """
+
+    def __init__(self, text: str, svg_path: str = "", parent: Optional[QWidget] = None) -> None:
+        super().__init__(parent)
+        self.setObjectName("FunctionTile")
+        # ToolButtonIconOnly 让 Qt 不自动按 "图下文" 排版；同时下方把
+        # text/icon 都置空，避免 super().paintEvent() 在背景之上再画一份
+        # 自带的图标/文字 → 这就是出现"重影"的原因。
+        self.setToolButtonStyle(Qt.ToolButtonIconOnly)
+        super().setText("")
+        self._display_text = text
+        self._icon: QIcon = QIcon()
+        self.setMinimumHeight(TILE_MIN_HEIGHT)
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        # iconSize 即便 icon 为空也仍被一些 style 用于估算尺寸，保留它无害
+        self.setIconSize(QSize(TILE_ICON_SIZE, TILE_ICON_SIZE))
+        self.setFocusPolicy(Qt.StrongFocus)
+        self._svg_path = svg_path
+        self._refresh_icon()
+
+    # ── 公共接口 ──
+    def set_svg_icon(self, svg_path: str) -> None:
+        self._svg_path = svg_path
+        self._refresh_icon()
+
+    # ── 内部 ──
+    def _refresh_icon(self) -> None:
+        if not self._svg_path:
+            self._icon = QIcon()
+        else:
+            pix = _render_svg_to_pixmap(self._svg_path, TILE_ICON_SIZE)
+            self._icon = QIcon(pix) if not pix.isNull() else QIcon()
+        self.update()
+
+    def paintEvent(self, event) -> None:  # noqa: N802
+        # 1) 让 QSS 把 background-color / border / :hover / :pressed 等画出来。
+        #    因为 self 不持有 icon/text，super 不会重复绘制图标和文字 → 不再重影。
+        super().paintEvent(event)
+
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing, True)
+        painter.setRenderHint(QPainter.SmoothPixmapTransform, True)
+
+        # 2) 计算"图标 + 间距 + 文字"整体在垂直方向上的居中位置。
+        rect = self.contentsRect()
+        text_to_draw = self._display_text or ""
+        font_metrics = painter.fontMetrics()
+        text_h = font_metrics.height() if text_to_draw else 0
+        icon_h = TILE_ICON_SIZE if not self._icon.isNull() else 0
+        gap = TILE_ICON_TEXT_SPACING if (icon_h and text_h) else 0
+        total_h = icon_h + gap + text_h
+        top = rect.top() + max(0, (rect.height() - total_h) // 2)
+
+        # 3) 绘制图标
+        if icon_h:
+            icon_rect_x = rect.left() + (rect.width() - TILE_ICON_SIZE) // 2
+            self._icon.paint(
+                painter,
+                icon_rect_x,
+                top,
+                TILE_ICON_SIZE,
+                TILE_ICON_SIZE,
+                Qt.AlignCenter,
+                QIcon.Normal if self.isEnabled() else QIcon.Disabled,
+            )
+
+        # 4) 绘制文字（颜色跟随当前 palette，禁用时变灰）
+        if text_h:
+            text_top = top + icon_h + gap
+            text_rect = rect.adjusted(0, text_top - rect.top(), 0, 0)
+            painter.setPen(self.palette().buttonText().color()
+                           if self.isEnabled() else self.palette().mid().color())
+            painter.drawText(text_rect, Qt.AlignHCenter | Qt.AlignTop, text_to_draw)
+
+        painter.end()
+
+
+# 资源目录：项目内 ``dataset/`` 下的 SVG 图标
+ASSETS_DIR = os.path.join(PROJECT_DIR, "dataset")
 
 
 # ---------------------------------------------------------------------------
@@ -583,25 +748,30 @@ class MainDashboard(QMainWindow):
 
     # ── 左上：功能区 ──
     def _build_function_group(self) -> QGroupBox:
+        """左上方功能区：2x2 瓷砖按钮，每个按钮图标在上、文字在下。
+
+        布局：
+            ┌──────────────┬──────────────┐
+            │  手眼标定     │  抓取标签     │
+            ├──────────────┼──────────────┤
+            │ 物流场景抓取  │ 语义引导抓取  │
+            └──────────────┴──────────────┘
+        """
         grp = QGroupBox("功能区")
         layout = QGridLayout(grp)
         layout.setContentsMargins(12, 18, 12, 12)
         layout.setHorizontalSpacing(10)
         layout.setVerticalSpacing(10)
 
-        self.btn_grasp = QPushButton("机械臂抓取")
-        self.btn_calib = QPushButton("手眼标定")
-        self.btn_spare1 = QPushButton("备用功能 1")
-        self.btn_spare2 = QPushButton("备用功能 2")
+        self.btn_calib = FunctionTile("手眼标定", os.path.join(ASSETS_DIR, "手眼标定.svg"))
+        self.btn_label = FunctionTile("抓取标注", os.path.join(ASSETS_DIR, "矩形框1.svg"))
+        self.btn_grasp = FunctionTile("物流场景分拣", os.path.join(ASSETS_DIR, "料箱到人空箱出库.svg"))
+        self.btn_semantic = FunctionTile("语义引导抓取", os.path.join(ASSETS_DIR, "AI智选.svg"))
 
-        for b in (self.btn_grasp, self.btn_calib, self.btn_spare1, self.btn_spare2):
-            b.setObjectName("PrimaryBig")
-            b.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-
-        layout.addWidget(self.btn_grasp, 0, 0)
-        layout.addWidget(self.btn_calib, 0, 1)
-        layout.addWidget(self.btn_spare1, 1, 0)
-        layout.addWidget(self.btn_spare2, 1, 1)
+        layout.addWidget(self.btn_calib, 0, 0)
+        layout.addWidget(self.btn_label, 0, 1)
+        layout.addWidget(self.btn_grasp, 1, 0)
+        layout.addWidget(self.btn_semantic, 1, 1)
 
         layout.setRowStretch(0, 1)
         layout.setRowStretch(1, 1)
@@ -714,10 +884,10 @@ class MainDashboard(QMainWindow):
     # ─────────────────────────── 信号连接 ───────────────────────────
     def _wire_signals(self) -> None:
         # 功能区：4 个独立占位函数
-        self.btn_grasp.clicked.connect(self.on_btn_grasp_clicked)
         self.btn_calib.clicked.connect(self.on_btn_calibration_clicked)
-        self.btn_spare1.clicked.connect(self.on_btn_spare1_clicked)
-        self.btn_spare2.clicked.connect(self.on_btn_spare2_clicked)
+        self.btn_label.clicked.connect(self.on_btn_labeling_clicked)
+        self.btn_grasp.clicked.connect(self.on_btn_grasp_clicked)
+        self.btn_semantic.clicked.connect(self.on_btn_semantic_clicked)
 
         # 机械臂顶部按钮
         self.btn_connect.clicked.connect(self._on_connect_clicked)
@@ -958,18 +1128,9 @@ class MainDashboard(QMainWindow):
         ):
             btn.setEnabled(self._robot_connected)
 
-    # ─────────────────────────── 功能区占位函数 ───────────────────────────
-    def on_btn_grasp_clicked(self) -> None:
-        """占位：机械臂抓取（启动 grasp_gui_v2.py）。"""
-        self.append_log("点击 [机械臂抓取] — 准备启动抓取界面", level="INFO")
-        self._launch_subprocess(
-            tag="grasp",
-            script_name="grasp_gui_v2.py",
-            label="机械臂抓取",
-        )
-
+    # ─────────────────────────── 功能区槽函数 ───────────────────────────
     def on_btn_calibration_clicked(self) -> None:
-        """占位：手眼标定（启动 calibration_gui.py）。"""
+        """启动手眼标定界面 (calibration_gui.py)。"""
         self.append_log("点击 [手眼标定] — 准备启动手眼标定界面", level="INFO")
         self._launch_subprocess(
             tag="calibration",
@@ -977,13 +1138,27 @@ class MainDashboard(QMainWindow):
             label="手眼标定",
         )
 
-    def on_btn_spare1_clicked(self) -> None:
-        """占位：备用功能 1。"""
-        self.append_log("点击 [备用功能 1] — 该功能暂未实现", level="DEBUG")
+    def on_btn_labeling_clicked(self) -> None:
+        """启动抓取矩形标注界面 (labeling_gui.py)。"""
+        self.append_log("点击 [抓取标签] — 准备启动抓取矩形标注工具", level="INFO")
+        self._launch_subprocess(
+            tag="labeling",
+            script_name="labeling_gui.py",
+            label="抓取标签",
+        )
 
-    def on_btn_spare2_clicked(self) -> None:
-        """占位：备用功能 2。"""
-        self.append_log("点击 [备用功能 2] — 该功能暂未实现", level="DEBUG")
+    def on_btn_grasp_clicked(self) -> None:
+        """启动物流场景抓取界面 (grasp_gui_v2.py)。"""
+        self.append_log("点击 [物流场景抓取] — 准备启动物流抓取界面", level="INFO")
+        self._launch_subprocess(
+            tag="grasp",
+            script_name="grasp_gui_v2.py",
+            label="物流场景抓取",
+        )
+
+    def on_btn_semantic_clicked(self) -> None:
+        """占位：语义引导抓取（功能未实现，仅记录日志）。"""
+        self.append_log("点击 [语义引导抓取] — 该功能暂未实现，敬请期待", level="DEBUG")
 
     # ─────────────────────────── 内部槽 ───────────────────────────
     def _on_pose_edited(self, name: str, text: str) -> None:
