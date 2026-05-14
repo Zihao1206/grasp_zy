@@ -109,6 +109,55 @@ class Grasp:
             raise CollisionDetected(f"碰撞检测到: {tag}")
         raise RuntimeError(f"MoveJ失败: {tag}")
         
+    def _check_empty_grasp(self, force_threshold=50, position_threshold=100):
+        """检测是否空抓
+        
+        通过读取夹爪状态判断是否成功抓取物体：
+        - mode == 1: 夹爪张开到最大且空闲，说明什么都没夹住
+        - actpos > position_threshold: 夹爪开口度仍然很大，说明空抓
+        - current_force < force_threshold: 夹爪几乎没有受力，说明空抓
+        
+        Args:
+            force_threshold: 力阈值(g)，低于此值视为空抓，默认50g
+            position_threshold: 开口度阈值，高于此值视为空抓，默认100
+            
+        Returns:
+            bool: True表示空抓，False表示抓取到了物体
+        """
+        try:
+            tag, state = self.robot.rm_get_gripper_state()
+            if tag != 0:
+                print(f"⚠ 读取夹爪状态失败: {tag}，默认视为空抓")
+                return True
+            
+            mode = state.get('mode', -1)
+            actpos = state.get('actpos', 0)
+            current_force = state.get('current_force', 0)
+            
+            print(f"夹爪状态: mode={mode}, actpos={actpos}, current_force={current_force}g")
+            
+            # mode==1 表示夹爪张开到最大且空闲 -> 空抓
+            if mode == 1:
+                print("判定: 夹爪完全张开(mode=1) -> 空抓")
+                return True
+            
+            # 开口度仍然很大 -> 空抓
+            if actpos > position_threshold:
+                print(f"判定: 开口度过大(actpos={actpos} > {position_threshold}) -> 空抓")
+                return True
+            
+            # 力太小 -> 空抓
+            if current_force < force_threshold:
+                print(f"判定: 夹持力过小(force={current_force}g < {force_threshold}g) -> 空抓")
+                return True
+            
+            print(f"判定: 抓取成功(actpos={actpos}, force={current_force}g)")
+            return False
+            
+        except Exception as e:
+            print(f"⚠ 空抓检测异常: {e}，默认视为空抓")
+            return True
+
     def _recover_from_collision(self):
         """碰撞恢复函数：停止、清除错误、回安全位"""
         print("执行碰撞恢复流程...")
@@ -576,6 +625,15 @@ class Grasp:
                     print("闭合夹爪抓取...")
                     self.gripper.gripper_position(0)
                     time.sleep(1)
+                    
+                    # --- 空抓判定 ---
+                    is_empty_grasp = self._check_empty_grasp()
+                    if is_empty_grasp:
+                        print("✗ 检测到空抓！放弃本次抓取，返回初始位置...")
+                        self._movej_safe(self.mid_pose1, self.robot_speed)
+                        self._movej_safe(self.lift2init_pose, self.robot_speed)
+                        self._movej_safe(self.init_pose, self.robot_speed)
+                        return False
                     
                     # 返回上方安全位置
                     print("返回上方安全位置...")
