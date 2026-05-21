@@ -156,3 +156,5 @@ Ros2/.colcon_workspace/
 #else
 disorder*/
 prepare/D435/data_collection_d435_win/images*/
+.sisyphus/
+CTUARM/
